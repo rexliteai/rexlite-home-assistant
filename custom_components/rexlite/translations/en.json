@@ -1,0 +1,60 @@
+{
+  "title": "REXLiTE",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect REXLiTE",
+        "description": "Enter the enrollment credentials issued by the REXLiTE operations platform.",
+        "data": {
+          "agent_id": "Agent ID",
+          "agent_auth_token": "Agent authentication token",
+          "gateway_ws_url": "Tunnel gateway URL",
+          "home_assistant_url": "Local Home Assistant URL",
+          "remote_admin_enabled": "Enable full remote administration"
+        },
+        "data_description": {
+          "home_assistant_url": "Use an address reachable from inside Home Assistant. The default works for Container and Core installations.",
+          "remote_admin_enabled": "Leave disabled for connection and health monitoring only."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect REXLiTE",
+        "description": "The enrollment credential is no longer accepted. Enter the replacement token.",
+        "data": {
+          "agent_auth_token": "Agent authentication token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the REXLiTE gateway. Check the network and gateway URL.",
+      "invalid_auth": "The agent ID or authentication token was rejected.",
+      "invalid_input": "One or more values are invalid. Check the URLs and agent ID."
+    },
+    "abort": {
+      "already_configured": "This REXLiTE connection is already configured.",
+      "reauth_successful": "REXLiTE credentials were updated successfully."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "connection_status": {
+        "name": "Connection status",
+        "state": {
+          "connected": "Connected",
+          "disconnected": "Disconnected"
+        }
+      }
+    },
+    "binary_sensor": {
+      "connected": {
+        "name": "Connected"
+      }
+    },
+    "switch": {
+      "remote_admin": {
+        "name": "Full remote administration"
+      }
+    }
+  }
+}
+

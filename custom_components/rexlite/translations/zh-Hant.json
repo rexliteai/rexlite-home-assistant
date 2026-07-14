@@ -1,0 +1,60 @@
+{
+  "title": "REXLiTE",
+  "config": {
+    "step": {
+      "user": {
+        "title": "連線 REXLiTE",
+        "description": "請輸入由 REXLiTE 營運平台核發的註冊憑證。",
+        "data": {
+          "agent_id": "Agent ID",
+          "agent_auth_token": "Agent 驗證權杖",
+          "gateway_ws_url": "通道閘道網址",
+          "home_assistant_url": "Home Assistant 內部網址",
+          "remote_admin_enabled": "啟用完整遠端管理"
+        },
+        "data_description": {
+          "home_assistant_url": "此網址必須能從 Home Assistant 內部連線；預設值適用於 Container 與 Core。",
+          "remote_admin_enabled": "若只需要連線與健康狀態監控，請維持關閉。"
+        }
+      },
+      "reauth_confirm": {
+        "title": "重新連線 REXLiTE",
+        "description": "目前的註冊憑證已失效，請輸入新的權杖。",
+        "data": {
+          "agent_auth_token": "Agent 驗證權杖"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "無法連線 REXLiTE 閘道，請檢查網路與閘道網址。",
+      "invalid_auth": "Agent ID 或驗證權杖遭到拒絕。",
+      "invalid_input": "部分輸入值無效，請檢查網址與 Agent ID。"
+    },
+    "abort": {
+      "already_configured": "此 REXLiTE 連線已完成設定。",
+      "reauth_successful": "REXLiTE 憑證已成功更新。"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "connection_status": {
+        "name": "連線狀態",
+        "state": {
+          "connected": "已連線",
+          "disconnected": "未連線"
+        }
+      }
+    },
+    "binary_sensor": {
+      "connected": {
+        "name": "已連線"
+      }
+    },
+    "switch": {
+      "remote_admin": {
+        "name": "完整遠端管理"
+      }
+    }
+  }
+}
+

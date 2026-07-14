@@ -1,0 +1,7 @@
+.DS_Store
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.log
+coverage.out
+rexlite-edge-agent
