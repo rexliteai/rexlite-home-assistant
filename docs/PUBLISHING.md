@@ -9,7 +9,8 @@ This repository publishes the REXLiTE custom integration for Home Assistant thro
 3. Test installation, setup, restart, update, and removal on supported Home Assistant environments.
 4. Confirm recovery behavior after a temporary service interruption.
 5. Confirm public logs and support data contain no customer or credential information.
-6. Create a version tag and a complete GitHub Release.
-7. Install the released version through HACS on a clean system.
+6. Confirm `custom_components/rexlite/brand/icon.png` and `logo.png` render in HACS and Home Assistant.
+7. Create a version tag and a complete GitHub Release.
+8. Install the released version through HACS on a clean system.
 
 Before publishing, confirm the repository metadata, validation workflow, release notes, and public artwork are complete.

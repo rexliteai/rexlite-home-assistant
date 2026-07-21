@@ -38,6 +38,7 @@ PYTHONPYCACHEPREFIX="${CACHE_DIR}" "${PYTHON_BIN}" -m unittest discover -s tests
 
 "${PYTHON_BIN}" - <<'PY'
 import json
+import struct
 from pathlib import Path
 
 paths = [Path("hacs.json"), *Path("custom_components/rexlite").rglob("*.json")]
@@ -45,6 +46,25 @@ for path in paths:
     with path.open(encoding="utf-8") as handle:
         json.load(handle)
 print(f"Validated {len(paths)} JSON files")
+
+brand_directory = Path("custom_components/rexlite/brand")
+brand_assets = {
+    "icon.png": (128, 128, True),
+    "logo.png": (128, 64, False),
+}
+for filename, (minimum_width, minimum_height, must_be_square) in brand_assets.items():
+    path = brand_directory / filename
+    header = path.read_bytes()[:24]
+    if len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
+        raise SystemExit(f"{path} is not a valid PNG image")
+    width, height = struct.unpack(">II", header[16:24])
+    if width < minimum_width or height < minimum_height:
+        raise SystemExit(
+            f"{path} must be at least {minimum_width}x{minimum_height} pixels"
+        )
+    if must_be_square and width != height:
+        raise SystemExit(f"{path} must be square")
+print(f"Validated {len(brand_assets)} local brand assets")
 PY
 
 if command -v ruff >/dev/null 2>&1; then
