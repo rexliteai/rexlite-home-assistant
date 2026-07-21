@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- Recreate the authenticated tunnel session whenever a user enables or disables remote administration.
+- Close all requests and streams from the previous access mode before reconnecting.
+- Preserve health-only monitoring while remote administration is disabled.
+
 ## 0.1.1
 
 - Fix dedicated-host Home Assistant pages remaining in a loading state.

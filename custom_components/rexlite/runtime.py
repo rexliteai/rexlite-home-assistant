@@ -133,6 +133,7 @@ class REXLiTETunnelClient:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._send_lock = asyncio.Lock()
+        self._access_mode_lock = asyncio.Lock()
         self._request_semaphore = asyncio.Semaphore(8)
         self._handler_tasks: set[asyncio.Task[Any]] = set()
         self._streams: dict[str, _LocalStream] = {}
@@ -182,24 +183,21 @@ class REXLiTETunnelClient:
         self._set_state(connected=False)
 
     async def async_set_remote_admin(self, enabled: bool) -> None:
-        """Apply the remote-control gate without dropping health monitoring."""
+        """Apply the remote-control gate using a clean gateway session."""
 
-        self._config = replace(self._config, remote_admin_enabled=enabled)
-        self._set_state(remote_admin_enabled=enabled)
-        if not enabled:
-            tasks = [task for task in self._handler_tasks if not task.done()]
-            for task in tasks:
-                task.cancel()
-            await self._close_all_streams()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-        if self._ws is not None and not self._ws.closed:
-            try:
-                await self._send_hello()
-                await self._send_heartbeat()
-            except (ConnectionError, aiohttp.ClientError) as err:
-                _LOGGER.debug("Gateway closed while updating access mode: %s", err)
-                await self._ws.close()
+        async with self._access_mode_lock:
+            if self._config.remote_admin_enabled == enabled:
+                return
+
+            self._config = replace(self._config, remote_admin_enabled=enabled)
+            self._set_state(remote_admin_enabled=enabled)
+
+            # The access mode is part of the authenticated WebSocket handshake.
+            # Reusing that socket after disabling remote access can leave gateway
+            # streams tied to the previous mode/session. Fully restart the tunnel
+            # so both disable and re-enable begin with no stale requests or streams.
+            await self.async_stop()
+            await self.async_start()
 
     async def _run_forever(self) -> None:
         attempt = 0
