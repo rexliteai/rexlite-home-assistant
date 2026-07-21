@@ -617,9 +617,7 @@ class REXLiTETunnelClient:
 
     async def _send_stream_data(self, request_id: str, data: bytes) -> None:
         if data:
-            await self._send(
-                TYPE_STREAM_DATA, request_id, {"data": encode_bytes(data)}
-            )
+            await self._send(TYPE_STREAM_DATA, request_id, {"data": encode_bytes(data)})
 
     async def _open_local_connection(
         self, url: str

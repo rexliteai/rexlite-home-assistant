@@ -62,15 +62,11 @@ class ProtocolTests(unittest.TestCase):
 
     def test_http_response_body_plan_finishes_keep_alive_responses(self) -> None:
         self.assertEqual(
-            protocol.http_response_body_plan(
-                "GET", 200, {"Content-Length": ["128"]}
-            ),
+            protocol.http_response_body_plan("GET", 200, {"Content-Length": ["128"]}),
             protocol.HttpResponseBodyPlan("fixed", 128),
         )
         self.assertEqual(
-            protocol.http_response_body_plan(
-                "HEAD", 405, {"Content-Length": ["23"]}
-            ),
+            protocol.http_response_body_plan("HEAD", 405, {"Content-Length": ["23"]}),
             protocol.HttpResponseBodyPlan("none"),
         )
         self.assertEqual(
