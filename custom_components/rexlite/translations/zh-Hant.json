@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "連線 REXLiTE",
-        "description": "請輸入由 REXLiTE 營運平台核發的註冊憑證。",
+        "description": "請先從 REXLiTE 營運平台下載一次性 Home Assistant 連線設定檔，再將同名欄位填入下方。請勿把 Home Assistant 密碼或長效存取權杖填入 Agent 驗證權杖。",
         "data": {
           "agent_id": "Agent ID",
           "agent_auth_token": "Agent 驗證權杖",
@@ -13,6 +13,9 @@
           "remote_admin_enabled": "啟用完整遠端管理"
         },
         "data_description": {
+          "agent_id": "填入下載設定檔中的 agent_id。",
+          "agent_auth_token": "填入下載設定檔中的 agent_auth_token；這不是 Home Assistant 存取權杖。",
+          "gateway_ws_url": "填入下載設定檔中的 gateway_ws_url。",
           "home_assistant_url": "此網址必須能從 Home Assistant 內部連線；預設值適用於 Container 與 Core。",
           "remote_admin_enabled": "若只需要連線與健康狀態監控，請維持關閉。"
         }
@@ -57,4 +60,3 @@
     }
   }
 }
-

@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect REXLiTE",
-        "description": "Enter the enrollment credentials issued by the REXLiTE operations platform.",
+        "description": "Download the one-time Home Assistant connection file from the REXLiTE operations platform, then enter the matching values below. Do not use your Home Assistant password or long-lived access token as the agent token.",
         "data": {
           "agent_id": "Agent ID",
           "agent_auth_token": "Agent authentication token",
@@ -13,6 +13,9 @@
           "remote_admin_enabled": "Enable full remote administration"
         },
         "data_description": {
+          "agent_id": "Use agent_id from the downloaded connection file.",
+          "agent_auth_token": "Use agent_auth_token from the downloaded connection file. This is not a Home Assistant access token.",
+          "gateway_ws_url": "Use gateway_ws_url from the downloaded connection file.",
           "home_assistant_url": "Use an address reachable from inside Home Assistant. The default works for Container and Core installations.",
           "remote_admin_enabled": "Leave disabled for connection and health monitoring only."
         }
@@ -57,4 +60,3 @@
     }
   }
 }
-
