@@ -34,10 +34,12 @@ from .protocol import (
     TYPE_STREAM_DATA,
     TYPE_STREAM_OPEN,
     Envelope,
+    HttpResponseBodyPlan,
     ProtocolError,
     agent_websocket_url,
     decode_bytes,
     encode_bytes,
+    http_response_body_plan,
     local_request_url,
     make_envelope,
     parse_envelope,
@@ -487,14 +489,16 @@ class REXLiTETunnelClient:
             )
             if len(response_head) > _MAX_HEADER_BYTES:
                 raise ProtocolError("Home Assistant response headers are too large")
-            status, response_headers = self._parse_http_response_head(response_head)
+            status, response_headers, body_plan = self._parse_http_response_head(
+                response_head, method
+            )
             await self._send(
                 TYPE_STREAM_ACCEPT,
                 envelope.request_id,
                 {"status_code": status, "headers": response_headers},
             )
             stream.reader_task = self._task_factory(
-                self._copy_local_stream(envelope.request_id, stream),
+                self._copy_local_stream(envelope.request_id, stream, body_plan),
                 f"REXLiTE stream {envelope.request_id}",
             )
         except asyncio.CancelledError:
@@ -532,16 +536,32 @@ class REXLiTETunnelClient:
                 {"error": self._safe_error(err)},
             )
 
-    async def _copy_local_stream(self, request_id: str, stream: _LocalStream) -> None:
+    async def _copy_local_stream(
+        self,
+        request_id: str,
+        stream: _LocalStream,
+        body_plan: HttpResponseBodyPlan,
+    ) -> None:
         error = ""
         try:
-            while data := await stream.reader.read(32 * 1024):
-                await self._send(
-                    TYPE_STREAM_DATA, request_id, {"data": encode_bytes(data)}
+            if body_plan.mode == "fixed":
+                await self._copy_fixed_http_body(
+                    request_id, stream.reader, body_plan.length
                 )
+            elif body_plan.mode == "chunked":
+                await self._copy_chunked_http_body(request_id, stream.reader)
+            elif body_plan.mode == "close":
+                while data := await stream.reader.read(32 * 1024):
+                    await self._send_stream_data(request_id, data)
         except asyncio.CancelledError:
             return
-        except (ConnectionError, OSError) as err:
+        except (
+            ConnectionError,
+            OSError,
+            ProtocolError,
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+        ) as err:
             error = self._safe_error(err)
         finally:
             await self._close_stream(request_id, cancel_reader=False)
@@ -552,6 +572,54 @@ class REXLiTETunnelClient:
                         request_id,
                         {"error": error} if error else {},
                     )
+
+    async def _copy_fixed_http_body(
+        self,
+        request_id: str,
+        reader: asyncio.StreamReader,
+        length: int,
+    ) -> None:
+        remaining = length
+        while remaining > 0:
+            data = await reader.readexactly(min(32 * 1024, remaining))
+            remaining -= len(data)
+            await self._send_stream_data(request_id, data)
+
+    async def _copy_chunked_http_body(
+        self,
+        request_id: str,
+        reader: asyncio.StreamReader,
+    ) -> None:
+        while True:
+            size_line = await reader.readuntil(b"\r\n")
+            if len(size_line) > _MAX_HEADER_BYTES:
+                raise ProtocolError("Home Assistant chunk header is too large")
+            try:
+                chunk_size = int(size_line[:-2].split(b";", 1)[0].strip(), 16)
+            except ValueError as err:
+                raise ProtocolError("invalid Home Assistant chunk size") from err
+            if chunk_size < 0:
+                raise ProtocolError("invalid Home Assistant chunk size")
+            if chunk_size == 0:
+                while trailer := await reader.readuntil(b"\r\n"):
+                    if trailer == b"\r\n":
+                        return
+                    if len(trailer) > _MAX_HEADER_BYTES:
+                        raise ProtocolError("Home Assistant trailer is too large")
+
+            remaining = chunk_size
+            while remaining > 0:
+                data = await reader.readexactly(min(32 * 1024, remaining))
+                remaining -= len(data)
+                await self._send_stream_data(request_id, data)
+            if await reader.readexactly(2) != b"\r\n":
+                raise ProtocolError("invalid Home Assistant chunk terminator")
+
+    async def _send_stream_data(self, request_id: str, data: bytes) -> None:
+        if data:
+            await self._send(
+                TYPE_STREAM_DATA, request_id, {"data": encode_bytes(data)}
+            )
 
     async def _open_local_connection(
         self, url: str
@@ -585,13 +653,19 @@ class REXLiTETunnelClient:
         if "\r" in method or "\n" in method or "\r" in target or "\n" in target:
             raise ProtocolError("invalid HTTP request target")
 
+        is_upgrade = any(
+            name.lower() == "upgrade" and value.strip() for name, value in headers
+        )
         filtered = [
             (name, value)
             for name, value in headers
             if name.lower() not in {"host", "content-length"}
+            and (is_upgrade or name.lower() not in _HOP_BY_HOP_HEADERS)
         ]
         filtered.append(("Host", parsed.netloc))
         filtered.append(("Content-Length", str(len(body))))
+        if not is_upgrade:
+            filtered.append(("Connection", "close"))
         lines = [f"{method} {target} HTTP/1.1"]
         for name, value in filtered:
             if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
@@ -600,8 +674,8 @@ class REXLiTETunnelClient:
         return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body
 
     def _parse_http_response_head(
-        self, data: bytes
-    ) -> tuple[int, dict[str, list[str]]]:
+        self, data: bytes, method: str
+    ) -> tuple[int, dict[str, list[str]], HttpResponseBodyPlan]:
         try:
             text = data.decode("latin-1")
             lines = text.split("\r\n")
@@ -609,6 +683,7 @@ class REXLiTETunnelClient:
             status = int(status_parts[1])
         except (UnicodeDecodeError, ValueError, IndexError) as err:
             raise ProtocolError("invalid Home Assistant HTTP response") from err
+        raw_headers: dict[str, list[str]] = {}
         headers: dict[str, list[str]] = {}
         for line in lines[1:]:
             if not line:
@@ -616,10 +691,11 @@ class REXLiTETunnelClient:
             if ":" not in line:
                 raise ProtocolError("invalid Home Assistant HTTP response header")
             name, value = line.split(":", 1)
+            raw_headers.setdefault(name.strip(), []).append(value.strip())
             if name.lower() in _HOP_BY_HOP_HEADERS and status != 101:
                 continue
             headers.setdefault(name.strip(), []).append(value.strip())
-        return status, headers
+        return status, headers, http_response_body_plan(method, status, raw_headers)
 
     def _request_headers(self, value: Any, keep_upgrade: bool) -> list[tuple[str, str]]:
         if value is None:

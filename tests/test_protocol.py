@@ -60,6 +60,46 @@ class ProtocolTests(unittest.TestCase):
                 "http://127.0.0.1:8123", "https://attacker.invalid/"
             )
 
+    def test_http_response_body_plan_finishes_keep_alive_responses(self) -> None:
+        self.assertEqual(
+            protocol.http_response_body_plan(
+                "GET", 200, {"Content-Length": ["128"]}
+            ),
+            protocol.HttpResponseBodyPlan("fixed", 128),
+        )
+        self.assertEqual(
+            protocol.http_response_body_plan(
+                "HEAD", 405, {"Content-Length": ["23"]}
+            ),
+            protocol.HttpResponseBodyPlan("none"),
+        )
+        self.assertEqual(
+            protocol.http_response_body_plan(
+                "GET", 200, {"Transfer-Encoding": ["chunked"]}
+            ),
+            protocol.HttpResponseBodyPlan("chunked"),
+        )
+        self.assertEqual(
+            protocol.http_response_body_plan(
+                "GET", 101, {"Connection": ["upgrade"], "Upgrade": ["websocket"]}
+            ),
+            protocol.HttpResponseBodyPlan("close"),
+        )
+
+    def test_http_response_body_plan_rejects_ambiguous_framing(self) -> None:
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.http_response_body_plan(
+                "GET", 200, {"Content-Length": ["12", "13"]}
+            )
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.http_response_body_plan(
+                "GET", 200, {"Transfer-Encoding": ["gzip"]}
+            )
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.http_response_body_plan(
+                "GET", 200, {"Transfer-Encoding": ["gzip, chunked"]}
+            )
+
     def test_urls_reject_credentials_and_unsafe_schemes(self) -> None:
         with self.assertRaises(protocol.ProtocolError):
             protocol.validate_gateway_url("https://gateway.example/ws/agent")

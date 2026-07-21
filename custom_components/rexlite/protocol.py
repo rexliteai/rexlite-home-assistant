@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -41,6 +42,57 @@ class Envelope:
     message_type: str
     request_id: str
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class HttpResponseBodyPlan:
+    """Describe how a raw HTTP/1.1 response body must be consumed."""
+
+    mode: str
+    length: int = 0
+
+
+def http_response_body_plan(
+    method: str,
+    status: int,
+    headers: Mapping[str, Sequence[str]],
+) -> HttpResponseBodyPlan:
+    """Return RFC-compatible framing for a proxied HTTP response body."""
+
+    normalized: dict[str, list[str]] = {}
+    for key, values in headers.items():
+        normalized.setdefault(key.lower(), []).extend(values)
+
+    if status == 101:
+        return HttpResponseBodyPlan("close")
+    if method.upper() == "HEAD" or 100 <= status < 200 or status in (204, 304):
+        return HttpResponseBodyPlan("none")
+
+    transfer_encoding = ",".join(normalized.get("transfer-encoding", ()))
+    if transfer_encoding:
+        encodings = [item.strip().lower() for item in transfer_encoding.split(",")]
+        if encodings != ["chunked"]:
+            raise ProtocolError("unsupported Home Assistant transfer encoding")
+        return HttpResponseBodyPlan("chunked")
+
+    content_lengths = {
+        item.strip()
+        for value in normalized.get("content-length", ())
+        for item in value.split(",")
+        if item.strip()
+    }
+    if content_lengths:
+        if len(content_lengths) != 1:
+            raise ProtocolError("conflicting Home Assistant content lengths")
+        try:
+            length = int(content_lengths.pop())
+        except ValueError as err:
+            raise ProtocolError("invalid Home Assistant content length") from err
+        if length < 0:
+            raise ProtocolError("invalid Home Assistant content length")
+        return HttpResponseBodyPlan("fixed", length)
+
+    return HttpResponseBodyPlan("close")
 
 
 def utc_timestamp() -> str:
