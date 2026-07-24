@@ -67,10 +67,13 @@ for filename, (minimum_width, minimum_height, must_be_square) in brand_assets.it
 print(f"Validated {len(brand_assets)} local brand assets")
 PY
 
-if command -v ruff >/dev/null 2>&1; then
-  ruff check custom_components tests
-  ruff format --check custom_components tests
+if ! "${PYTHON_BIN}" -m ruff --version >/dev/null 2>&1; then
+  echo "Ruff is required for verification; install it with: ${PYTHON_BIN} -m pip install ruff" >&2
+  exit 1
 fi
+
+"${PYTHON_BIN}" -m ruff check custom_components tests
+"${PYTHON_BIN}" -m ruff format --check custom_components tests
 
 git diff --check
 echo "REXLiTE HACS integration verification passed"

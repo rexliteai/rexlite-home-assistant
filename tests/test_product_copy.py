@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = ROOT / "custom_components" / "rexlite"
@@ -47,7 +46,12 @@ class ProductCopyTests(unittest.TestCase):
             "串接",
             "內部網址",
         )
-        for filename in ("strings.json", "translations/en.json", "translations/zh-Hant.json"):
+        filenames = (
+            "strings.json",
+            "translations/en.json",
+            "translations/zh-Hant.json",
+        )
+        for filename in filenames:
             values = _string_values(_load_json(INTEGRATION / filename))
             for text in values:
                 with self.subTest(filename=filename, text=text):
