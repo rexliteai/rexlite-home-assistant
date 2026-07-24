@@ -9,13 +9,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import REXLiTEConfigEntry
-from .const import (
-    ATTR_ACCESS_MODE,
-    ATTR_GATEWAY_URL,
-    ATTR_LAST_CONNECTED_AT,
-    ATTR_LAST_ERROR,
-    ATTR_RECONNECT_ATTEMPT,
-)
 from .entity import REXLiTEEntity
 
 
@@ -30,7 +23,7 @@ async def async_setup_entry(
 
 
 class REXLiTEConnectionStatusSensor(REXLiTEEntity, SensorEntity):
-    """Human-readable tunnel state with troubleshooting attributes."""
+    """Human-readable REXLiTE AI cloud-service state."""
 
     _attr_translation_key = "connection_status"
     _attr_icon = "mdi:cloud-lock"
@@ -44,16 +37,3 @@ class REXLiTEConnectionStatusSensor(REXLiTEEntity, SensorEntity):
         """Return a stable machine-readable state."""
 
         return "connected" if self.coordinator.data.connected else "disconnected"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose bounded, non-secret diagnostic state."""
-
-        state = self.coordinator.data
-        return {
-            ATTR_ACCESS_MODE: state.access_mode,
-            ATTR_GATEWAY_URL: self.coordinator.config.gateway_url,
-            ATTR_LAST_CONNECTED_AT: state.last_connected_at,
-            ATTR_LAST_ERROR: state.last_error,
-            ATTR_RECONNECT_ATTEMPT: state.reconnect_attempt,
-        }

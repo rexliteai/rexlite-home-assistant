@@ -19,9 +19,9 @@ class REXLiTEEntity(CoordinatorEntity[REXLiTECoordinator]):
         agent_id = coordinator.config.agent_id
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, agent_id)},
-            name=f"REXLiTE {agent_id}",
-            manufacturer="REXLiTE",
-            model="Home Assistant Tunnel",
+            name=f"REXLiTE AI {agent_id}",
+            manufacturer="REXLiTE AI",
+            model="REXLiTE AI Cloud Service",
             sw_version=INTEGRATION_VERSION,
             configuration_url="https://github.com/rexliteai/rexlite-home-assistant",
         )

@@ -56,14 +56,6 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 TextSelectorConfig(type=TextSelectorType.PASSWORD)
             ),
             vol.Required(
-                CONF_GATEWAY_WS_URL,
-                default=values.get(CONF_GATEWAY_WS_URL, DEFAULT_GATEWAY_WS_URL),
-            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
-            vol.Required(
-                CONF_HOME_ASSISTANT_URL,
-                default=values.get(CONF_HOME_ASSISTANT_URL, DEFAULT_HOME_ASSISTANT_URL),
-            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
-            vol.Required(
                 CONF_REMOTE_ADMIN_ENABLED,
                 default=values.get(
                     CONF_REMOTE_ADMIN_ENABLED, DEFAULT_REMOTE_ADMIN_ENABLED
@@ -81,8 +73,12 @@ async def _validate_input(hass: Any, user_input: dict[str, Any]) -> dict[str, An
     if not token or len(token) > 4096:
         raise InvalidAuthError
 
-    gateway_url = validate_gateway_url(str(user_input[CONF_GATEWAY_WS_URL]))
-    local_url = validate_local_url(str(user_input[CONF_HOME_ASSISTANT_URL]))
+    gateway_url = validate_gateway_url(
+        str(user_input.get(CONF_GATEWAY_WS_URL, DEFAULT_GATEWAY_WS_URL))
+    )
+    local_url = validate_local_url(
+        str(user_input.get(CONF_HOME_ASSISTANT_URL, DEFAULT_HOME_ASSISTANT_URL))
+    )
     session = async_get_clientsession(hass)
     timeout = aiohttp.ClientTimeout(total=10)
     try:
@@ -133,7 +129,9 @@ class REXLiTEConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 await self.async_set_unique_id(data[CONF_AGENT_ID])
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=data[CONF_AGENT_ID], data=data)
+                return self.async_create_entry(
+                    title=f"REXLiTE AI {data[CONF_AGENT_ID]}", data=data
+                )
         return self.async_show_form(
             step_id="user", data_schema=_schema(user_input), errors=errors
         )

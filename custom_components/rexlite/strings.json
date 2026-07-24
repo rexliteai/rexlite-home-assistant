@@ -1,61 +1,57 @@
 {
-  "title": "REXLiTE",
+  "title": "REXLiTE AI",
   "config": {
     "step": {
       "user": {
-        "title": "Connect REXLiTE",
-        "description": "Download the one-time Home Assistant connection file from the REXLiTE operations platform, then enter the matching values below. Do not use your Home Assistant password or long-lived access token as the agent token.",
+        "title": "Activate REXLiTE AI Cloud Service",
+        "description": "Use the activation details provided by REXLiTE AI to start your cloud service. You can turn remote service on or off at any time after activation.",
         "data": {
-          "agent_id": "Agent ID",
-          "agent_auth_token": "Agent authentication token",
-          "gateway_ws_url": "Tunnel gateway URL",
-          "home_assistant_url": "Local Home Assistant URL",
-          "remote_admin_enabled": "Enable full remote administration"
+          "agent_id": "Service ID",
+          "agent_auth_token": "Secure activation code",
+          "remote_admin_enabled": "Turn on remote service"
         },
         "data_description": {
-          "agent_id": "Use agent_id from the downloaded connection file.",
-          "agent_auth_token": "Use agent_auth_token from the downloaded connection file. This is not a Home Assistant access token.",
-          "gateway_ws_url": "Use gateway_ws_url from the downloaded connection file.",
-          "home_assistant_url": "Use an address reachable from inside Home Assistant. The default works for Container and Core installations.",
-          "remote_admin_enabled": "Leave disabled for connection and health monitoring only."
+          "agent_id": "The unique service number assigned to this location.",
+          "agent_auth_token": "The secure activation information issued by REXLiTE AI.",
+          "remote_admin_enabled": "When enabled, authorized users can securely use remote service. You can change this setting at any time."
         }
       },
       "reauth_confirm": {
-        "title": "Reconnect REXLiTE",
-        "description": "The enrollment credential is no longer accepted. Enter the replacement token.",
+        "title": "Restore REXLiTE AI Cloud Service",
+        "description": "To keep your service protected, enter the new secure activation code to verify this location.",
         "data": {
-          "agent_auth_token": "Agent authentication token"
+          "agent_auth_token": "Secure activation code"
         }
       }
     },
     "error": {
-      "cannot_connect": "Cannot connect to the REXLiTE gateway. Check the network and gateway URL.",
-      "invalid_auth": "The agent ID or authentication token was rejected.",
-      "invalid_input": "One or more values are invalid. Check the URLs and agent ID."
+      "cannot_connect": "REXLiTE AI Cloud Service is temporarily unavailable. Check your network and try again.",
+      "invalid_auth": "The service ID or secure activation code is incorrect. Please check and try again.",
+      "invalid_input": "Some service details could not be recognized. Please use the latest REXLiTE AI activation details."
     },
     "abort": {
-      "already_configured": "This REXLiTE connection is already configured.",
-      "reauth_successful": "REXLiTE credentials were updated successfully."
+      "already_configured": "REXLiTE AI Cloud Service is already active for this location.",
+      "reauth_successful": "REXLiTE AI Cloud Service has been restored."
     }
   },
   "entity": {
     "sensor": {
       "connection_status": {
-        "name": "Connection status",
+        "name": "REXLiTE AI Cloud Service",
         "state": {
-          "connected": "Connected",
-          "disconnected": "Disconnected"
+          "connected": "Service available",
+          "disconnected": "Service unavailable"
         }
       }
     },
     "binary_sensor": {
       "connected": {
-        "name": "Connected"
+        "name": "Cloud service connection"
       }
     },
     "switch": {
       "remote_admin": {
-        "name": "Full remote administration"
+        "name": "Remote service"
       }
     }
   }

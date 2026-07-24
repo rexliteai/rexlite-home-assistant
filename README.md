@@ -1,10 +1,10 @@
-# REXLiTE for Home Assistant
+# REXLiTE AI for Home Assistant
 
 <p align="center">
   <img src="assets/logo.png" width="250" height="100" alt="REXLiTE logo">
 </p>
 
-REXLiTE 官方 Home Assistant 整合，可透過 HACS 安裝與更新。
+REXLiTE AI 為居家與場域提供安全、穩定的雲端服務。完成啟用後，使用者可依需求隨時開啟或關閉遠端服務，並持續掌握服務狀態。
 
 ## 安裝
 
@@ -18,12 +18,12 @@ REXLiTE 官方 Home Assistant 整合，可透過 HACS 安裝與更新。
 2. 右上角選單選擇 **自訂儲存庫（Custom repositories）**。
 3. 輸入 `https://github.com/rexliteai/rexlite-home-assistant`。
 4. 類別選擇 **Integration**，按下 **新增**。
-5. 開啟 **REXLiTE** 並按 **下載**。
+5. 開啟 **REXLiTE AI** 並按 **下載**。
 6. 重新啟動 Home Assistant。
-7. 前往 **設定 > 裝置與服務 > 新增整合**，搜尋 **REXLiTE**。
+7. 前往 **設定 > 裝置與服務 > 新增整合**，搜尋 **REXLiTE AI**。
 8. 依畫面指示完成設定。
 
-最低支援 Home Assistant `2026.1.0`。若 HACS 已下載但「新增整合」仍找不到 REXLiTE，請先重新啟動 Home Assistant，再強制重新整理瀏覽器快取。
+最低支援 Home Assistant `2026.1.0`。若 HACS 已下載但「新增整合」仍找不到 REXLiTE AI，請先重新啟動 Home Assistant，再強制重新整理瀏覽器快取。
 
 ## 支援環境
 
@@ -38,9 +38,10 @@ REXLiTE 官方 Home Assistant 整合，可透過 HACS 安裝與更新。
 
 ## 功能
 
-- 提供 REXLiTE 服務連線與狀態顯示。
-- 支援連線中斷後自動恢復。
-- 提供可由使用者管理的功能設定。
+- 提供 REXLiTE AI 雲端服務與即時服務狀態。
+- 服務暫時中斷時會自動恢復，減少人工處理。
+- 遠端服務可由使用者隨時開啟或關閉。
+- 關閉遠端服務後，仍保留基本服務狀態。
 - 支援繁體中文與英文介面。
 
-如需協助，請聯絡 REXLiTE 支援服務。安全性問題請依 [SECURITY.md](SECURITY.md) 私下通報，請勿在公開 Issue 張貼帳號、設定內容、系統網址或日誌。
+如需協助，請聯絡 REXLiTE AI 客戶服務。為保障帳號與服務安全，請勿在公開區域張貼啟用資料、服務位置或系統紀錄。
