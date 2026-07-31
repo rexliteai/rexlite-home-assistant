@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- Rename the integration and setup experience to REXLiTE AI.
+- Simplify activation by using the managed REXLiTE gateway and local Home
+  Assistant defaults.
+- Add local brand assets for Home Assistant 2026.3 and newer.
+- Strengthen product-copy, JSON, brand-asset, and release validation checks.
+
 ## 0.1.2
 
 - Recreate the authenticated tunnel session whenever a user enables or disables remote administration.
