@@ -60,6 +60,25 @@ class ProductCopyTests(unittest.TestCase):
                         f"Public copy exposes an engineering term: {text}",
                     )
 
+    def test_cloud_service_wording_is_consistent(self) -> None:
+        filenames = (
+            "strings.json",
+            "translations/en.json",
+            "translations/zh-Hant.json",
+        )
+        forbidden_phrases = ("remote service", "遠端服務")
+        for filename in filenames:
+            values = _string_values(_load_json(INTEGRATION / filename))
+            for text in values:
+                with self.subTest(filename=filename, text=text):
+                    self.assertFalse(
+                        any(
+                            phrase.casefold() in text.casefold()
+                            for phrase in forbidden_phrases
+                        ),
+                        f"Public copy does not use cloud-service wording: {text}",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

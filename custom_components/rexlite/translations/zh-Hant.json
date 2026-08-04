@@ -4,16 +4,16 @@
     "step": {
       "user": {
         "title": "啟用 REXLiTE AI 雲端服務",
-        "description": "請使用 REXLiTE AI 提供的啟用資料開通雲端服務。完成後，您可隨時開啟或關閉遠端服務。",
+        "description": "請使用 REXLiTE AI 提供的啟用資料開通雲端服務。完成後，您可隨時開啟或關閉雲端服務。",
         "data": {
           "agent_id": "服務識別碼",
           "agent_auth_token": "安全啟用碼",
-          "remote_admin_enabled": "開啟遠端服務"
+          "remote_admin_enabled": "開啟雲端服務"
         },
         "data_description": {
           "agent_id": "此場域專屬的服務編號。",
           "agent_auth_token": "由 REXLiTE AI 提供的安全啟用資訊。",
-          "remote_admin_enabled": "開啟後，授權人員可安全使用遠端服務；您可隨時變更此設定。"
+          "remote_admin_enabled": "開啟後，授權人員可安全使用雲端服務；您可隨時變更此設定。"
         }
       },
       "reauth_confirm": {
@@ -51,7 +51,7 @@
     },
     "switch": {
       "remote_admin": {
-        "name": "遠端服務"
+        "name": "雲端服務"
       }
     }
   }
