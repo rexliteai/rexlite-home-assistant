@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4
+
+- Add compliant 256x256 and 512x512 local brand icons for supported Home
+  Assistant versions.
+- Consistently describe the customer-facing feature as REXLiTE AI Cloud
+  Service in Traditional Chinese and English.
+- Preserve existing configurations by keeping the internal service-setting
+  schema unchanged.
+- Add regression coverage for customer-facing cloud-service terminology.
+
 ## 0.1.3
 
 - Rename the integration and setup experience to REXLiTE AI.

@@ -4,16 +4,16 @@
     "step": {
       "user": {
         "title": "Activate REXLiTE AI Cloud Service",
-        "description": "Use the activation details provided by REXLiTE AI to start your cloud service. You can turn remote service on or off at any time after activation.",
+        "description": "Use the activation details provided by REXLiTE AI to start your cloud service. You can turn the cloud service on or off at any time after activation.",
         "data": {
           "agent_id": "Service ID",
           "agent_auth_token": "Secure activation code",
-          "remote_admin_enabled": "Turn on remote service"
+          "remote_admin_enabled": "Turn on cloud service"
         },
         "data_description": {
           "agent_id": "The unique service number assigned to this location.",
           "agent_auth_token": "The secure activation information issued by REXLiTE AI.",
-          "remote_admin_enabled": "When enabled, authorized users can securely use remote service. You can change this setting at any time."
+          "remote_admin_enabled": "When enabled, authorized users can securely use the cloud service. You can change this setting at any time."
         }
       },
       "reauth_confirm": {
@@ -51,7 +51,7 @@
     },
     "switch": {
       "remote_admin": {
-        "name": "Remote service"
+        "name": "Cloud service"
       }
     }
   }
