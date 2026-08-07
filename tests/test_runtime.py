@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -57,13 +58,14 @@ sys.modules["aiohttp"] = aiohttp
 
 _load_module("const", "const.py")
 _load_module("protocol", "protocol.py")
+network = _load_module("network", "network.py")
 runtime = _load_module("runtime", "runtime.py")
 
 
 class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     """Protect remote access mode changes from stale tunnel sessions."""
 
-    def _client(self, enabled: bool) -> Any:
+    def _client(self, enabled: bool, detector: Any = None) -> Any:
         return runtime.REXLiTETunnelClient(
             session=object(),
             config=runtime.TunnelConfig(
@@ -76,6 +78,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ),
             state_callback=lambda state: None,
             task_factory=lambda coroutine, name: None,
+            ipc_ip_detector=detector,
         )
 
     async def test_access_mode_change_restarts_the_authenticated_session(self) -> None:
@@ -113,3 +116,40 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await client.async_set_remote_admin(False)
 
         self.assertEqual(calls, [])
+
+    async def test_ip_change_republishes_hello_before_heartbeat(self) -> None:
+        detected = iter(
+            (
+                network.IPCLanAddress("192.168.68.65", "default_route"),
+                network.IPCLanAddress("192.168.68.65", "default_route"),
+                network.IPCLanAddress("192.168.1.107", "default_route"),
+            )
+        )
+        client = self._client(False, lambda _: next(detected))
+        sent: list[tuple[str, dict[str, Any]]] = []
+
+        async def send(
+            message_type: str,
+            request_id: str = "",
+            payload: Mapping[str, Any] | None = None,
+        ) -> None:
+            sent.append((message_type, dict(payload or {})))
+
+        client._send = send
+
+        await client._send_hello()
+        await client._send_heartbeat()
+        await client._send_heartbeat()
+
+        self.assertEqual(
+            [message_type for message_type, _ in sent],
+            ["hello", "heartbeat", "hello", "heartbeat"],
+        )
+        self.assertEqual(
+            sent[0][1]["metadata"]["ipc_lan_url"],
+            "http://192.168.68.65:8123",
+        )
+        self.assertEqual(
+            sent[2][1]["metadata"]["ipc_lan_url"],
+            "http://192.168.1.107:8123",
+        )

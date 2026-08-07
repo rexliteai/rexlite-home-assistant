@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5
+
+- Detect the current Home Assistant host LAN IPv4 address and report it with
+  the stable tunnel agent ID.
+- Reject loopback, public, link-local, and Docker bridge addresses so stale
+  `127.0.0.1` and `172.17.0.1` values are never published as IPC endpoints.
+- Re-publish tunnel metadata when the LAN IP changes, allowing the operation
+  platform and mobile app to reconcile a moved IPC without re-pairing.
+
 ## 0.1.4
 
 - Add compliant 256x256 and 512x512 local brand icons for supported Home

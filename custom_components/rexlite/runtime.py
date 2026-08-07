@@ -21,6 +21,7 @@ from .const import (
     ACCESS_MODE_HEALTH_ONLY,
     INTEGRATION_VERSION,
 )
+from .network import IPCLanAddress, detect_ipc_lan_ipv4
 from .protocol import (
     TYPE_ERROR,
     TYPE_HEARTBEAT,
@@ -123,11 +124,13 @@ class REXLiTETunnelClient:
         config: TunnelConfig,
         state_callback: Callable[[RuntimeState], None],
         task_factory: Callable[[Coroutine[Any, Any, Any], str], asyncio.Task[Any]],
+        ipc_ip_detector: Callable[[str], IPCLanAddress | None] | None = None,
     ) -> None:
         self._session = session
         self._config = config
         self._state_callback = state_callback
         self._task_factory = task_factory
+        self._ipc_ip_detector = ipc_ip_detector or detect_ipc_lan_ipv4
         self._state = RuntimeState(remote_admin_enabled=config.remote_admin_enabled)
         self._main_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -140,6 +143,7 @@ class REXLiTETunnelClient:
         self._stopping = False
         self._connected_since: float | None = None
         self._last_connection_duration = 0.0
+        self._last_ip_signature: tuple[str, str, str] | None = None
 
     @property
     def state(self) -> RuntimeState:
@@ -299,19 +303,72 @@ class REXLiTETunnelClient:
             await asyncio.sleep(self._config.heartbeat_interval)
             await self._send_heartbeat()
 
-    async def _send_hello(self) -> None:
+    async def _send_hello(
+        self,
+        network_metadata: Mapping[str, str] | None = None,
+    ) -> None:
+        current_network_metadata = dict(network_metadata or self._network_metadata())
         await self._send(
             TYPE_HELLO,
             payload={
                 "version": INTEGRATION_VERSION,
-                "metadata": self._metadata(),
+                "metadata": {
+                    **self._metadata(),
+                    **current_network_metadata,
+                },
             },
         )
+        self._last_ip_signature = self._network_signature(current_network_metadata)
 
     async def _send_heartbeat(self) -> None:
+        await self._refresh_network_metadata()
         await self._send(
             TYPE_HEARTBEAT,
             payload={"status": "ok", "remote_access_mode": self._state.access_mode},
+        )
+
+    async def _refresh_network_metadata(self) -> None:
+        metadata = self._network_metadata()
+        if self._network_signature(metadata) == self._last_ip_signature:
+            return
+        await self._send_hello(metadata)
+
+    def _network_metadata(self) -> dict[str, str]:
+        try:
+            detected = self._ipc_ip_detector(self._config.home_assistant_url)
+        except Exception as err:  # noqa: BLE001 - discovery must not stop the tunnel
+            _LOGGER.warning(
+                "Unable to detect the Home Assistant LAN IPv4 address: %s",
+                self._safe_error(err),
+            )
+            detected = None
+
+        if detected is None:
+            return {
+                "ipc_lan_ip_status": "unavailable",
+                "ipc_lan_ipv4": "",
+                "ipc_lan_url": "",
+                "ipc_lan_ip_source": "",
+                "ipc_lan_ip_detected_at": "",
+                "home_assistant_local_url": "",
+            }
+
+        local_url = f"http://{detected.address}:8123"
+        return {
+            "ipc_lan_ip_status": "ok",
+            "ipc_lan_ipv4": detected.address,
+            "ipc_lan_url": local_url,
+            "ipc_lan_ip_source": detected.source,
+            "ipc_lan_ip_detected_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "home_assistant_local_url": local_url,
+        }
+
+    @staticmethod
+    def _network_signature(metadata: Mapping[str, str]) -> tuple[str, str, str]:
+        return (
+            metadata.get("ipc_lan_ip_status", ""),
+            metadata.get("ipc_lan_ipv4", ""),
+            metadata.get("ipc_lan_ip_source", ""),
         )
 
     def _metadata(self) -> dict[str, str]:
