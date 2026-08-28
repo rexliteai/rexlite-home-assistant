@@ -36,4 +36,4 @@ class REXLiTEConnectionStatusSensor(REXLiTEEntity, SensorEntity):
     def native_value(self) -> str:
         """Return a stable machine-readable state."""
 
-        return "connected" if self.coordinator.data.connected else "disconnected"
+        return self.coordinator.data.cloud_service_state

@@ -94,6 +94,7 @@ class RuntimeState:
     reconnect_attempt: int = 0
     last_connected_at: str | None = None
     last_error: str | None = None
+    authentication_failed: bool = False
 
     @property
     def access_mode(self) -> str:
@@ -104,6 +105,18 @@ class RuntimeState:
             if self.remote_admin_enabled
             else ACCESS_MODE_HEALTH_ONLY
         )
+
+    @property
+    def cloud_service_state(self) -> str:
+        """Return the customer-visible service lifecycle state."""
+
+        if self.authentication_failed:
+            return "verification_required"
+        if not self.connected:
+            return "disconnected"
+        if not self.remote_admin_enabled:
+            return "ready_for_activation"
+        return "connected"
 
 
 @dataclass(slots=True)
@@ -124,12 +137,14 @@ class REXLiTETunnelClient:
         config: TunnelConfig,
         state_callback: Callable[[RuntimeState], None],
         task_factory: Callable[[Coroutine[Any, Any, Any], str], asyncio.Task[Any]],
+        auth_failure_callback: Callable[[], None] | None = None,
         ipc_ip_detector: Callable[[str], IPCLanAddress | None] | None = None,
     ) -> None:
         self._session = session
         self._config = config
         self._state_callback = state_callback
         self._task_factory = task_factory
+        self._auth_failure_callback = auth_failure_callback
         self._ipc_ip_detector = ipc_ip_detector or detect_ipc_lan_ipv4
         self._state = RuntimeState(remote_admin_enabled=config.remote_admin_enabled)
         self._main_task: asyncio.Task[None] | None = None
@@ -144,6 +159,7 @@ class REXLiTETunnelClient:
         self._connected_since: float | None = None
         self._last_connection_duration = 0.0
         self._last_ip_signature: tuple[str, str, str] | None = None
+        self._auth_failure_reported = False
 
     @property
     def state(self) -> RuntimeState:
@@ -211,22 +227,18 @@ class REXLiTETunnelClient:
                 raise ConnectionError("gateway connection closed")
             except asyncio.CancelledError:
                 raise
+            except aiohttp.WSServerHandshakeError as err:
+                if self._stopping:
+                    return
+                if err.status not in (401, 403):
+                    attempt = self._record_transient_failure(err, attempt)
+                else:
+                    self._record_auth_failure(err.status)
+                    return
             except Exception as err:  # noqa: BLE001 - supervisor must remain alive
                 if self._stopping:
                     return
-                if self._last_connection_duration >= 300:
-                    attempt = 0
-                safe_error = self._safe_error(err)
-                self._set_state(
-                    connected=False,
-                    reconnect_attempt=attempt + 1,
-                    last_error=safe_error,
-                )
-                _LOGGER.warning(
-                    "REXLiTE gateway disconnected; retrying (attempt %s): %s",
-                    attempt + 1,
-                    safe_error,
-                )
+                attempt = self._record_transient_failure(err, attempt)
 
             delay = self._reconnect_backoff(attempt)
             attempt = min(attempt + 1, 30)
@@ -261,7 +273,9 @@ class REXLiTETunnelClient:
                 reconnect_attempt=0,
                 last_connected_at=now,
                 last_error=None,
+                authentication_failed=False,
             )
+            self._auth_failure_reported = False
             await self._send_hello()
             self._heartbeat_task = self._task_factory(
                 self._heartbeat_loop(),
@@ -851,6 +865,50 @@ class REXLiTETunnelClient:
             return
         self._state = next_state
         self._state_callback(next_state)
+
+    def _record_auth_failure(self, status: int) -> None:
+        """Stop retrying a permanently rejected credential and request reauth."""
+
+        self._set_state(
+            connected=False,
+            reconnect_attempt=0,
+            last_error=f"authentication_failed (HTTP {status})",
+            authentication_failed=True,
+        )
+        if self._auth_failure_reported:
+            return
+        self._auth_failure_reported = True
+        _LOGGER.warning(
+            "REXLiTE AI rejected the stored service credential; "
+            "Home Assistant reauthentication is required"
+        )
+        if self._auth_failure_callback is not None:
+            try:
+                self._auth_failure_callback()
+            except Exception:  # noqa: BLE001 - isolate lifecycle notifications
+                _LOGGER.exception("Unable to start REXLiTE reauthentication")
+
+    def _record_transient_failure(self, err: BaseException, attempt: int) -> int:
+        """Record a retryable failure without flooding the Home Assistant log."""
+
+        if self._stopping:
+            return attempt
+        if self._last_connection_duration >= 300:
+            attempt = 0
+        safe_error = self._safe_error(err)
+        self._set_state(
+            connected=False,
+            reconnect_attempt=attempt + 1,
+            last_error=safe_error,
+            authentication_failed=False,
+        )
+        log = _LOGGER.warning if attempt == 0 else _LOGGER.debug
+        log(
+            "REXLiTE gateway disconnected; retrying (attempt %s): %s",
+            attempt + 1,
+            safe_error,
+        )
+        return attempt
 
     def _reconnect_backoff(self, attempt: int) -> float:
         maximum = max(self._config.reconnect_delay, self._config.reconnect_max_delay)

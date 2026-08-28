@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 MODULE_PATH = (
     Path(__file__).parents[1] / "custom_components" / "rexlite" / "protocol.py"
@@ -49,6 +50,29 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("region=tw", result)
         self.assertIn("agent_id=hub-1", result)
         self.assertIn("meta_remote_access_mode=health_only", result)
+
+    def test_cloud_identity_is_independent_of_lan_ip_and_customer_pairing(
+        self,
+    ) -> None:
+        result = protocol.agent_websocket_url(
+            "wss://gateway.example/ws/agent",
+            agent_id="factory-preconfigured-hub",
+            version="0.1.6",
+            remote_admin_enabled=True,
+        )
+        query = parse_qs(urlsplit(result).query)
+
+        self.assertEqual(query["agent_id"], ["factory-preconfigured-hub"])
+        self.assertEqual(query["meta_remote_access_mode"], ["full_control"])
+        self.assertFalse(
+            {
+                "ipc_lan_ipv4",
+                "ipc_lan_url",
+                "customer_id",
+                "owner_id",
+                "pairing_id",
+            }.intersection(query)
+        )
 
     def test_local_request_is_pinned_to_configured_origin(self) -> None:
         result = protocol.local_request_url(

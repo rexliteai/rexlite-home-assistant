@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.6
+
+- Classify rejected service credentials separately from temporary network
+  failures, stop permanent retry loops, and start Home Assistant reauthentication.
+- Validate stored credentials before runtime setup while preserving Home
+  Assistant's bounded setup retry for boot-time network unavailability.
+- Distinguish a healthy preconfigured connection awaiting user activation from
+  an active cloud service, without changing the stable service identity.
+- Preserve the same authenticated agent identity across reboot and DHCP address
+  changes, and re-publish the current LAN endpoint after connectivity returns.
+- Redact the service identity, activation credential, and local Home Assistant
+  address from diagnostics, and clean up runtime tasks during unload.
+
 ## 0.1.5
 
 - Detect the current Home Assistant host LAN IPv4 address and report it with

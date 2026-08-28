@@ -7,7 +7,17 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from . import REXLiTEConfigEntry
-from .const import CONF_AGENT_AUTH_TOKEN
+from .const import (
+    CONF_AGENT_AUTH_TOKEN,
+    CONF_AGENT_ID,
+    CONF_HOME_ASSISTANT_URL,
+)
+
+_REDACTED_ENTRY_FIELDS = {
+    CONF_AGENT_AUTH_TOKEN,
+    CONF_AGENT_ID,
+    CONF_HOME_ASSISTANT_URL,
+}
 
 
 async def async_get_config_entry_diagnostics(
@@ -16,7 +26,7 @@ async def async_get_config_entry_diagnostics(
     """Return useful diagnostics without exposing enrollment credentials."""
 
     data = {
-        key: "**REDACTED**" if key == CONF_AGENT_AUTH_TOKEN else value
+        key: "**REDACTED**" if key in _REDACTED_ENTRY_FIELDS else value
         for key, value in entry.data.items()
     }
     state = entry.runtime_data.data
@@ -29,5 +39,7 @@ async def async_get_config_entry_diagnostics(
             "reconnect_attempt": state.reconnect_attempt,
             "last_connected_at": state.last_connected_at,
             "last_error": state.last_error,
+            "authentication_failed": state.authentication_failed,
+            "cloud_service_state": state.cloud_service_state,
         },
     }

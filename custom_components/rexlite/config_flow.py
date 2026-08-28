@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any, Final
 
-import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -16,6 +15,11 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from .authentication import (
+    CannotConnectError,
+    InvalidAuthError,
+    async_validate_gateway_credentials,
+)
 from .const import (
     CONF_AGENT_AUTH_TOKEN,
     CONF_AGENT_ID,
@@ -29,20 +33,11 @@ from .const import (
 )
 from .protocol import (
     ProtocolError,
-    credential_probe_url,
     validate_gateway_url,
     validate_local_url,
 )
 
 _AGENT_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-
-
-class InvalidAuthError(Exception):
-    """Raised when enrollment credentials are rejected."""
-
-
-class CannotConnectError(Exception):
-    """Raised when the gateway cannot be reached."""
 
 
 def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
@@ -80,22 +75,12 @@ async def _validate_input(hass: Any, user_input: dict[str, Any]) -> dict[str, An
         str(user_input.get(CONF_HOME_ASSISTANT_URL, DEFAULT_HOME_ASSISTANT_URL))
     )
     session = async_get_clientsession(hass)
-    timeout = aiohttp.ClientTimeout(total=10)
-    try:
-        async with session.get(
-            credential_probe_url(gateway_url, agent_id),
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=timeout,
-            allow_redirects=False,
-        ) as response:
-            if response.status in (401, 403):
-                raise InvalidAuthError
-            if response.status not in (200, 404):
-                raise CannotConnectError
-    except InvalidAuthError:
-        raise
-    except (aiohttp.ClientError, TimeoutError) as err:
-        raise CannotConnectError from err
+    await async_validate_gateway_credentials(
+        session,
+        gateway_url=gateway_url,
+        agent_id=agent_id,
+        token=token,
+    )
 
     return {
         CONF_AGENT_ID: agent_id,
@@ -161,9 +146,7 @@ class REXLiTEConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except ProtocolError:
                 errors["base"] = "invalid_input"
             else:
-                self.hass.config_entries.async_update_entry(entry, data=data)
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
+                return self.async_update_reload_and_abort(entry, data=data)
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=vol.Schema(

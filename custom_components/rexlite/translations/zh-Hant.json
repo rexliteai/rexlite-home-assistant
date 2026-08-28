@@ -40,7 +40,9 @@
         "name": "REXLiTE AI 雲端服務",
         "state": {
           "connected": "服務正常",
-          "disconnected": "服務未連線"
+          "disconnected": "服務未連線",
+          "ready_for_activation": "準備完成，等待開通",
+          "verification_required": "需要重新驗證"
         }
       }
     },

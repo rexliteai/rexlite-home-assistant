@@ -5,8 +5,14 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as home_assistant_version
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .authentication import (
+    CannotConnectError,
+    InvalidAuthError,
+    async_validate_gateway_credentials,
+)
 from .const import (
     CONF_AGENT_AUTH_TOKEN,
     CONF_AGENT_ID,
@@ -43,8 +49,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: REXLiTEConfigEntry) -> b
         home_assistant_version=home_assistant_version,
         remote_admin_enabled=remote_admin_enabled,
     )
-    coordinator = REXLiTECoordinator(hass, entry, async_get_clientsession(hass), config)
+    session = async_get_clientsession(hass)
+    try:
+        await async_validate_gateway_credentials(
+            session,
+            gateway_url=config.gateway_url,
+            agent_id=config.agent_id,
+            token=config.auth_token,
+        )
+    except InvalidAuthError as err:
+        raise ConfigEntryAuthFailed(
+            "REXLiTE AI rejected the stored service credential"
+        ) from err
+    except CannotConnectError as err:
+        raise ConfigEntryNotReady(
+            "REXLiTE AI Cloud Service is temporarily unavailable"
+        ) from err
+
+    coordinator = REXLiTECoordinator(hass, entry, session, config)
     entry.runtime_data = coordinator
+    entry.async_on_unload(coordinator.async_shutdown)
     await coordinator.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

@@ -40,7 +40,9 @@
         "name": "REXLiTE AI Cloud Service",
         "state": {
           "connected": "Service available",
-          "disconnected": "Service unavailable"
+          "disconnected": "Service unavailable",
+          "ready_for_activation": "Ready to activate",
+          "verification_required": "Verification required"
         }
       }
     },

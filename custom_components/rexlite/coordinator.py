@@ -33,6 +33,7 @@ class REXLiTECoordinator(DataUpdateCoordinator[RuntimeState]):
             update_interval=None,
         )
         self.config = config
+        self._entry = entry
         self.client = REXLiTETunnelClient(
             session,
             config,
@@ -40,6 +41,7 @@ class REXLiTECoordinator(DataUpdateCoordinator[RuntimeState]):
             lambda coroutine, name: entry.async_create_background_task(
                 hass, coroutine, name=name
             ),
+            self._handle_auth_failure,
         )
         self.async_set_updated_data(self.client.state)
 
@@ -62,3 +64,8 @@ class REXLiTECoordinator(DataUpdateCoordinator[RuntimeState]):
 
     def _handle_state(self, state: RuntimeState) -> None:
         self.async_set_updated_data(state)
+
+    def _handle_auth_failure(self) -> None:
+        """Request one Home Assistant reauthentication flow."""
+
+        self._entry.async_start_reauth(self.hass)
