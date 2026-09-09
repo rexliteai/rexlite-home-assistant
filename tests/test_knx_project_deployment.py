@@ -356,6 +356,61 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
         self.mapper.start()
         self.addCleanup(self.mapper.stop)
 
+    async def test_manual_yaml_check_is_read_only_and_deploy_preserves_existing(self):
+        await self.writer.deploy(FINGERPRINT)
+        before = self.writer.files.read(m.GENERATED)
+        source = 'knx:\n  switch:\n    - name: Manual\n      address: "3/0/8"\n'
+        checked = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, check_only=True
+        )
+        self.assertEqual(checked["status"], "ready", checked)
+        self.assertEqual(self.writer.files.read(m.GENERATED), before)
+        result = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, baseline=checked["fingerprint"]
+        )
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(result["entityCount"], 3)
+        self.assertEqual(result["manualCount"], 1)
+        self.assertEqual(result["manualDigest"], m.digest(source.encode()))
+        configured = load_config(self.root)["knx"]
+        self.assertEqual(configured["light"], PLAN["config"]["light"])
+        # Auto retries retain the manual addition and don't redeploy it.
+        retry = await self.writer.deploy(FINGERPRINT)
+        self.assertEqual(retry["entityCount"], 3)
+        self.assertEqual(load_config(self.root)["knx"], configured)
+
+    async def test_manual_yaml_rejects_stale_check_and_existing_address(self):
+        source = 'knx:\n  switch:\n    - name: Manual\n      address: "3/0/8"\n'
+        checked = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, check_only=True
+        )
+        self.assertEqual(checked["status"], "ready", checked)
+        self.writer.files.write("configuration.yaml", b"default_config:\n# changed\n")
+        result = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, baseline=checked["fingerprint"]
+        )
+        self.assertEqual(result["error"], "manual_yaml_preflight_stale")
+        self.assertIsNone(self.writer.files.read(m.GENERATED))
+        await self.writer.deploy(FINGERPRINT)
+        result = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source.replace("3/0/8", "1/0/1"), check_only=True
+        )
+        self.assertIn("already_exists", result["error"])
+
+    async def test_manual_yaml_reload_failure_rolls_back(self):
+        source = 'knx:\n  switch:\n    - name: Manual\n      address: "3/0/8"\n'
+        checked = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, check_only=True
+        )
+        before = self.writer.files.read("configuration.yaml")
+        self.fail_reload = True
+        result = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, baseline=checked["fingerprint"]
+        )
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(self.writer.files.read("configuration.yaml"), before)
+        self.assertIsNone(self.writer.files.read(m.GENERATED))
+
     async def get_project(self):
         return deepcopy(self.project)
 
@@ -567,9 +622,11 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
                 raise AssertionError("No result for non-admin")
 
         with patch.dict(sys.modules, {"homeassistant.components": components}):
+            self.hass.bus = types.SimpleNamespace(async_listen_once=Mock())
             m.register_websocket_commands(self.hass)
             m.register_websocket_commands(self.hass)
-        self.assertEqual(len(handlers), 4)
+        self.addCleanup(self.hass.data["rexlite_knx_uploads"].close)
+        self.assertEqual(len(handlers), 6)
         for handler in handlers:
             with self.assertRaises(PermissionError):
                 await handler(self.hass, Connection(), {"id": 1})
@@ -980,3 +1037,24 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManualYamlTests(unittest.TestCase):
+    def test_untrusted_yaml_is_rejected(self):
+        for source in (
+            "knx: !include secret.yaml",
+            "knx: &a {light: *a}",
+            "knx: {}\nknx: {}",
+            "knx: {}\nautomation: []",
+            "knx: {shell_command: []}",
+            'knx: {scene: [{name: Scene, address: "4/0/1"}]}',
+            'knx: {scene: [{name: Scene, address: "4/0/1", scene_number: 0}]}',
+            'knx: {light: [{name: Lamp, address: "1/0/1", unique_id: stolen}]}',
+        ):
+            with self.subTest(source=source), self.assertRaises(m.DeploymentError):
+                m.manual_yaml_plan(source)
+
+    def test_equivalent_address_styles_have_same_identity(self):
+        a = m.manual_yaml_plan('knx: {light: [{name: Lamp, address: "1/0/1"}]}')
+        b = m.manual_yaml_plan('knx: {light: [{name: Lamp, address: "2049"}]}')
+        self.assertEqual(a["entities"], b["entities"])

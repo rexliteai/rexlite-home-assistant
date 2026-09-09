@@ -32,7 +32,7 @@ MANIFEST = f"{MANAGED_DIR}/deployment.json"
 JOURNAL = f"{MANAGED_DIR}/transaction.json"
 LAST_ATTEMPT = f"{MANAGED_DIR}/last_attempt.json"
 IMPORT_ASSOCIATION = f"{MANAGED_DIR}/import.json"
-MAX_PROJECT_BYTES = 25 * 1024 * 1024
+MAX_PROJECT_BYTES = 100 * 1024 * 1024
 FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MINIMUM_KNX_CORE_VERSION = "2026.1.0"
@@ -478,6 +478,141 @@ def filter_existing(
     return result, combined
 
 
+def manual_yaml_plan(source: str) -> dict:
+    """Accept bounded KNX entity data only, never HA tags, includes or paths."""
+    if not isinstance(source, str) or not 0 < len(source.encode()) <= 131072:
+        raise DeploymentError("manual_yaml_size_invalid")
+    try:
+        # Reject anchors before construction so expansion cannot consume memory.
+        depth = 0
+        for token in yaml.scan(source):
+            if isinstance(
+                token,
+                (
+                    yaml.tokens.FlowMappingStartToken,
+                    yaml.tokens.FlowSequenceStartToken,
+                    yaml.tokens.BlockMappingStartToken,
+                    yaml.tokens.BlockSequenceStartToken,
+                ),
+            ):
+                depth += 1
+                if depth > 12:
+                    raise DeploymentError("manual_yaml_too_deep")
+            elif isinstance(
+                token,
+                (
+                    yaml.tokens.FlowMappingEndToken,
+                    yaml.tokens.FlowSequenceEndToken,
+                    yaml.tokens.BlockEndToken,
+                ),
+            ):
+                depth -= 1
+            if isinstance(
+                token,
+                (yaml.tokens.AnchorToken, yaml.tokens.AliasToken, yaml.tokens.TagToken),
+            ):
+                raise DeploymentError("manual_yaml_tags_or_aliases_not_allowed")
+        node = yaml.compose(source)
+
+        def check(value, depth=0):
+            if depth > 12:
+                raise DeploymentError("manual_yaml_too_deep")
+            if isinstance(value, yaml.MappingNode):
+                names = set()
+                for key, child in value.value:
+                    if (
+                        not isinstance(key, yaml.ScalarNode)
+                        or key.value in names
+                        or key.value == "<<"
+                    ):
+                        raise DeploymentError("manual_yaml_duplicate_key")
+                    names.add(key.value)
+                    check(child, depth + 1)
+            elif isinstance(value, yaml.SequenceNode):
+                for child in value.value:
+                    check(child, depth + 1)
+
+        check(node)
+        document = yaml.safe_load(source)
+    except yaml.YAMLError as err:
+        raise DeploymentError("manual_yaml_invalid") from err
+    if not isinstance(document, dict) or set(document) != {"knx"}:
+        raise DeploymentError("manual_yaml_requires_knx_root")
+    config = document["knx"]
+    platforms = {
+        "light",
+        "switch",
+        "scene",
+        "sensor",
+        "binary_sensor",
+        "cover",
+        "climate",
+    }
+    if not isinstance(config, dict) or not config or not set(config) <= platforms:
+        raise DeploymentError("manual_yaml_platform_unsupported")
+    entities = []
+    identities = set()
+    for platform, rows in config.items():
+        if not isinstance(rows, list) or not rows:
+            raise DeploymentError("manual_yaml_entities_must_be_list")
+        for row in rows:
+            if not isinstance(row, dict) or "unique_id" in row:
+                raise DeploymentError("manual_yaml_entity_invalid")
+            if (
+                not isinstance(row.get("name"), str)
+                or not 0 < len(row["name"].strip()) <= 120
+            ):
+                raise DeploymentError("manual_yaml_name_required")
+            uid = row_identity(platform, row)
+            if uid is None or (platform, uid) in identities:
+                raise DeploymentError("manual_yaml_identity_invalid_or_duplicate")
+            if platform == "scene" and (
+                type(row.get("scene_number")) is not int
+                or not 1 <= row["scene_number"] <= 64
+            ):
+                raise DeploymentError("manual_yaml_scene_number_required")
+            identities.add((platform, uid))
+            unique_id = "rexlite_manual_" + digest(f"{platform}:{uid}".encode())[:32]
+            row["unique_id"] = unique_id
+            entities.append(
+                {
+                    "platform": platform,
+                    "uniqueId": unique_id,
+                    "addresses": sorted(_addresses(row)),
+                }
+            )
+    if not 0 < len(entities) <= 100:
+        raise DeploymentError("manual_yaml_entity_limit")
+    return {
+        "config": config,
+        "entities": entities,
+        "entityCount": len(entities),
+        "skipped": [],
+    }
+
+
+def append_manual_plan(base: dict, addition: dict) -> dict:
+    """Add new identities without modifying active entities."""
+    result = deepcopy(base)
+    keys = {(e["platform"], e["uniqueId"]) for e in result["entities"]}
+    addresses = {a for e in result["entities"] for a in e["addresses"]}
+    for entity in addition["entities"]:
+        if (entity["platform"], entity["uniqueId"]) in keys:
+            raise DeploymentError("manual_yaml_entity_already_exists")
+        # Sharing a scene address across distinct explicit numbers is legitimate.
+        if entity["platform"] != "scene" and set(entity["addresses"]) & addresses:
+            raise DeploymentError("manual_yaml_address_already_exists")
+    for platform, rows in addition["config"].items():
+        result["config"].setdefault(platform, []).extend(deepcopy(rows))
+    result["entities"].extend(deepcopy(addition["entities"]))
+    result["entityCount"] = len(result["entities"])
+    used = {a for e in addition["entities"] for a in e["addresses"]}
+    result["skipped"] = [
+        item for item in result["skipped"] if item.get("address") not in used
+    ]
+    return result
+
+
 class ProjectDeployer:
     """Serialize writes, durably journal them, reload and verify actual entities."""
 
@@ -520,7 +655,14 @@ class ProjectDeployer:
                 raise DeploymentError("project_file_empty")
             return checksum.hexdigest()
 
-        with process_uploaded_file(hass, file_id) as path:
+        from .knx_project_upload import DATA_KEY as UPLOAD_KEY
+
+        uploaded_file = (
+            hass.data[UPLOAD_KEY].consume(file_id)
+            if file_id.startswith("rexlite-") and UPLOAD_KEY in hass.data
+            else process_uploaded_file(hass, file_id)
+        )
+        with uploaded_file as path:
             if file_fingerprint(path) != fingerprint:
                 raise DeploymentError("project_file_fingerprint_mismatch")
             project = XKNXProj(
@@ -662,6 +804,8 @@ class ProjectDeployer:
             "homeAssistantVersion": __version__,
             "requiredHomeAssistantVersion": MINIMUM_KNX_CORE_VERSION,
             "integrationVersion": INTEGRATION_VERSION,
+            "chunkedUpload": True,
+            "maxProjectBytes": MAX_PROJECT_BYTES,
         }
         try:
             info.update(self._compatibility())
@@ -843,6 +987,8 @@ class ProjectDeployer:
             "availableCount",
             "skipped",
             "error",
+            "manualDigest",
+            "manualCount",
         )
         return {key: manifest[key] for key in keys if key in manifest}
 
@@ -880,7 +1026,14 @@ class ProjectDeployer:
                 raise DeploymentError("rollback_reload_failed")
         await self._io(self.files.write, JOURNAL, None)
 
-    async def deploy(self, fingerprint: str) -> dict:
+    async def deploy(
+        self,
+        fingerprint: str,
+        *,
+        manual_yaml: str | None = None,
+        check_only: bool = False,
+        baseline: str = "",
+    ) -> dict:
         if not FINGERPRINT.fullmatch(fingerprint):
             raise DeploymentError("invalid_project_fingerprint")
         async with self.lock:
@@ -898,6 +1051,8 @@ class ProjectDeployer:
             try:
                 compatibility = self._compatibility()
                 if pending := await self._io(self.files.read_json, JOURNAL):
+                    if check_only:
+                        raise DeploymentError("deployment_recovery_required")
                     await self._rollback(pending)
                 previous = await self._read_previous()
                 mode = compatibility["identityMode"]
@@ -931,7 +1086,8 @@ class ProjectDeployer:
                 if association.get("parsedProjectDigest") != parsed_hash:
                     raise DeploymentError("project_changed_after_import")
                 if (
-                    previous
+                    manual_yaml is None
+                    and previous
                     and previous.get("projectFingerprint") == fingerprint
                     and (previous.get("parsedProjectDigest") == parsed_hash)
                     and previous.get("status") in ("completed", "partial")
@@ -975,9 +1131,96 @@ class ProjectDeployer:
                     ):
                         raise DeploymentError("managed_entity_configuration_conflict")
                 ui_addresses = self._ui_addresses(module)
+                if manual_yaml is not None:
+                    addition = adapt_plan_identity(
+                        await self._io(manual_yaml_plan, manual_yaml),
+                        mode,
+                        address_format,
+                    )
+                    try:
+                        self._schema(addition["config"])
+                    except Exception as err:
+                        # Return field locations only, never values or file contents.
+                        path = ".".join(str(part) for part in getattr(err, "path", []))
+                        safe_path = re.sub(r"[^a-zA-Z0-9_.]", "", path)[:200]
+                        raise DeploymentError(
+                            "manual_yaml_schema_invalid:" + safe_path
+                        ) from err
+                    base = {
+                        "config": before_config if previous else {},
+                        "entities": deepcopy(previous.get("entities", []))
+                        if previous
+                        else [],
+                        "skipped": deepcopy(previous.get("skipped", plan["skipped"]))
+                        if previous
+                        else plan["skipped"],
+                        "entityCount": previous.get("entityCount", 0)
+                        if previous
+                        else 0,
+                        "projectId": plan.get("projectId"),
+                        "identityMode": mode,
+                        "addressFormat": address_format,
+                    }
+                    if previous and previous.get("projectFingerprint") != fingerprint:
+                        raise DeploymentError("manual_yaml_project_changed")
+                    plan = append_manual_plan(base, addition)
+                    manual_config = (
+                        deepcopy(
+                            previous.get(
+                                "manualPlan",
+                                {
+                                    "config": {},
+                                    "entities": [],
+                                    "skipped": [],
+                                    "entityCount": 0,
+                                },
+                            )
+                        )
+                        if previous
+                        else {
+                            "config": {},
+                            "entities": [],
+                            "skipped": [],
+                            "entityCount": 0,
+                        }
+                    )
+                    plan["manualPlan"] = append_manual_plan(manual_config, addition)
+                    plan["manualDigest"] = digest(manual_yaml.encode())
+                    plan["manualCount"] = addition["entityCount"]
+                    checked_fingerprint = project_digest(
+                        {
+                            "source": plan["manualDigest"],
+                            "project": fingerprint,
+                            "parsed": parsed_hash,
+                            "configEntryId": module.entry.entry_id,
+                            "existing": existing,
+                            "ui": sorted(ui_addresses),
+                            "managed": previous.get("managedDigest")
+                            if previous
+                            else None,
+                            "root": digest(
+                                (await self._io(self.files.read, "configuration.yaml"))
+                                or b""
+                            ),
+                        }
+                    )
+                    if not check_only and (
+                        not baseline or baseline != checked_fingerprint
+                    ):
+                        raise DeploymentError("manual_yaml_preflight_stale")
+                elif previous and previous.get("manualPlan"):
+                    if previous.get("projectFingerprint") != fingerprint:
+                        raise DeploymentError("manual_yaml_project_changed")
+                    plan = append_manual_plan(plan, previous["manualPlan"])
+                    plan["manualPlan"] = previous["manualPlan"]
+                expected_count = plan["entityCount"]
                 plan, combined = filter_existing(
                     plan, existing, previous, ui_addresses, address_format
                 )
+                if manual_yaml is not None and plan["entityCount"] != expected_count:
+                    raise DeploymentError(
+                        "manual_yaml_conflicts_with_existing_configuration"
+                    )
                 manifest.update(
                     plan,
                     parsedProjectDigest=parsed_hash,
@@ -994,6 +1237,15 @@ class ProjectDeployer:
                     return self._public(manifest)
                 self._schema(plan["config"])
                 self._schema(combined)
+                if check_only:
+                    await self._io(self.files.activation_changes)
+                    return {
+                        "status": "ready",
+                        "fingerprint": checked_fingerprint,
+                        "projectFingerprint": fingerprint,
+                        "manualDigest": plan["manualDigest"],
+                        "manualCount": plan["manualCount"],
+                    }
 
                 def prepare_changes() -> tuple[dict, dict]:
                     original_root = self.files.read("configuration.yaml")
@@ -1100,7 +1352,8 @@ class ProjectDeployer:
                     availableCount=0,
                     error=error,
                 )
-                await self._io(self.files.write_json, LAST_ATTEMPT, manifest)
+                if not check_only:
+                    await self._io(self.files.write_json, LAST_ATTEMPT, manifest)
                 return self._public(manifest)
             finally:
                 self.current = None
@@ -1115,6 +1368,43 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
         return hass.data[DATA_KEY]
     deployer = ProjectDeployer(hass)
     hass.data[DATA_KEY] = deployer
+
+    from .knx_project_upload import DATA_KEY as UPLOAD_KEY
+    from .knx_project_upload import ProjectUploads
+
+    uploads = hass.data[UPLOAD_KEY] = ProjectUploads()
+
+    async def cleanup_uploads(_event):
+        await hass.async_add_executor_job(uploads.close)
+
+    hass.bus.async_listen_once("homeassistant_stop", cleanup_uploads)
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "rexlite/knx/project_upload",
+            vol.Required("action"): vol.In(["start", "chunk", "seal", "discard"]),
+            vol.Required("uploadId"): vol.All(str, vol.Match(r"^[a-f0-9]{32}$")),
+            vol.Required("owner"): vol.All(str, vol.Length(min=1, max=256)),
+            vol.Optional("size"): int,
+            vol.Optional("fileName"): str,
+            vol.Optional("projectFingerprint"): str,
+            vol.Optional("offset"): int,
+            vol.Optional("data"): vol.All(str, vol.Length(max=699052)),
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def upload(hass, connection, msg):
+        try:
+            result = await hass.async_add_executor_job(uploads.request, msg)
+        except ValueError as err:
+            connection.send_error(msg["id"], "project_upload_failed", str(err))
+        except OSError:
+            connection.send_error(
+                msg["id"], "project_upload_failed", "upload_storage_unavailable"
+            )
+        else:
+            connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(
         {vol.Required("type"): "rexlite/knx/project_capabilities"}
@@ -1183,7 +1473,30 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
         else:
             connection.send_result(msg["id"], result)
 
-    for command in (capabilities, process, deploy, status):
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "rexlite/knx/manual_yaml",
+            vol.Required("projectFingerprint"): vol.All(str, vol.Match(FINGERPRINT)),
+            vol.Required("yaml"): vol.All(str, vol.Length(min=1, max=131072)),
+            vol.Required("action"): vol.In(("check", "deploy")),
+            vol.Optional("fingerprint", default=""): str,
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def manual(hass: Any, connection: Any, msg: dict) -> None:
+        task = hass.async_create_task(
+            deployer.deploy(
+                msg["projectFingerprint"],
+                manual_yaml=msg["yaml"],
+                check_only=msg["action"] == "check",
+                baseline=msg["fingerprint"],
+            ),
+            "REXLiTE manual KNX YAML",
+        )
+        connection.send_result(msg["id"], await asyncio.shield(task))
+
+    for command in (capabilities, process, deploy, status, manual, upload):
         websocket_api.async_register_command(hass, command)
 
     return deployer

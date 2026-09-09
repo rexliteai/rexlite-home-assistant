@@ -5,6 +5,7 @@ Unlike a mock connection, ActiveConnection has no require_admin() method.
 """
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import logging
@@ -59,7 +60,7 @@ async def main() -> None:
         hass = HomeAssistant(directory)
         deployer = m.register_websocket_commands(hass)
         assert m.register_websocket_commands(hass) is deployer
-        assert len(hass.data["websocket_api"]) == 4
+        assert len(hass.data["websocket_api"]) == 6
         admin = User(name="Test administrator", perm_lookup=None, is_owner=True)
         viewer = User(name="Test viewer", perm_lookup=None)
         responses = asyncio.Queue()
@@ -100,6 +101,42 @@ async def main() -> None:
         response = await request("project_capabilities", {})
         assert response["success"] and response["result"]["supported"], response
 
+        transfer = {
+            "uploadId": "b" * 32,
+            "owner": "test",
+            "action": "start",
+            "fileName": "test.knxproj",
+            "size": 4,
+            "projectFingerprint": hashlib.sha256(b"PK\x03\x04").hexdigest(),
+        }
+        connection.user = viewer
+        assert (await request("project_upload", transfer))["error"][
+            "code"
+        ] == "unauthorized"
+        connection.user = admin
+        assert (await request("project_upload", transfer))["success"]
+        chunk = {
+            "uploadId": "b" * 32,
+            "owner": "test",
+            "action": "chunk",
+            "offset": 0,
+            "data": "UEsDBA==",
+        }
+        assert (await request("project_upload", chunk))["result"]["offset"] == 4
+        assert (await request("project_upload", chunk))["result"]["offset"] == 4
+        assert (
+            await request(
+                "project_upload",
+                {"uploadId": "b" * 32, "owner": "test", "action": "seal"},
+            )
+        )["result"]["sealed"]
+        assert (
+            await request(
+                "project_upload",
+                {"uploadId": "b" * 32, "owner": "test", "action": "discard"},
+            )
+        )["success"]
+
         for user in (viewer, admin):
             connection.user = user
             for command, method, fields, arguments in commands:
@@ -117,6 +154,28 @@ async def main() -> None:
                         assert not response["success"], response
                         assert response["error"]["code"] == "unauthorized", response
                         work.assert_not_called()
+
+        for user in (viewer, admin):
+            connection.user = user
+            with patch.object(
+                deployer, "deploy", AsyncMock(return_value={"status": "ready"})
+            ) as work:
+                response = await request(
+                    "manual_yaml",
+                    {
+                        "projectFingerprint": fingerprint,
+                        "yaml": "knx: {}",
+                        "action": "check",
+                    },
+                )
+                if user is admin:
+                    assert response["success"], response
+                    work.assert_awaited_once_with(
+                        fingerprint, manual_yaml="knx: {}", check_only=True, baseline=""
+                    )
+                else:
+                    assert response["error"]["code"] == "unauthorized", response
+                    work.assert_not_called()
 
         # Schema validation must reject bad fingerprints before any operation.
         with patch.object(deployer, "deploy", AsyncMock()) as work:

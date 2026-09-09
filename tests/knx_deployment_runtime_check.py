@@ -86,7 +86,77 @@ async def run_case(label, manual, expected_count):
         case.doCleanups()
 
 
+async def run_manual_case():
+    case = fixture.DeploymentTests()
+    case.setUp()
+    case.writer._schema = actual_schema
+    controlled_reload = case.reload
+
+    async def reload(entry_id):
+        result = await controlled_reload(entry_id)
+        case.module.config_yaml = actual_schema(case.module.config_yaml)
+        return result
+
+    case.hass.config_entries.async_reload = reload
+    source = """knx:
+  light:
+    - name: Manual light
+      address: "2/0/1"
+  switch:
+    - name: Manual switch
+      address: "2/0/2"
+  cover:
+    - name: Manual cover
+      move_long_address: "2/0/3"
+  climate:
+    - name: Manual climate
+      temperature_address: "2/0/4"
+      target_temperature_address: "2/0/5"
+      target_temperature_state_address: "2/0/9"
+  sensor:
+    - name: Manual temperature
+      state_address: "2/0/6"
+      type: temperature
+  binary_sensor:
+    - name: Manual contact
+      state_address: "2/0/7"
+  scene:
+    - name: Manual scene
+      address: "2/0/8"
+      scene_number: 2
+"""
+    try:
+        with (
+            patch.object(
+                case.writer,
+                "_compatibility",
+                return_value=m.core_compatibility(__version__),
+            ),
+            patch.object(
+                case.writer,
+                "_address_format",
+                return_value=GroupAddress.address_format.name,
+            ),
+        ):
+            await case.writer.deploy(fixture.FINGERPRINT)
+            checked = await case.writer.deploy(
+                fixture.FINGERPRINT, manual_yaml=source, check_only=True
+            )
+            assert checked["status"] == "ready", checked
+            assert case.reload_calls == 1
+            result = await case.writer.deploy(
+                fixture.FINGERPRINT, manual_yaml=source, baseline=checked["fingerprint"]
+            )
+            assert result["status"] == "completed", result
+            assert result["manualCount"] == 7 and result["loadedCount"] == 9, result
+            assert case.reload_calls == 2
+            print("Real HA", __version__, "seven-platform manual YAML transaction PASS")
+    finally:
+        case.doCleanups()
+
+
 async def main():
+    await run_manual_case()
     cases = [
         (
             "manual list light + singleton climate",
