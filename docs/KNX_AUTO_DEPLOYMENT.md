@@ -2,7 +2,7 @@
 
 ## Runtime and release requirements
 
-- REXLiTE AI integration 0.1.7 or newer, loaded after a Home Assistant restart.
+- REXLiTE AI integration 0.1.8 or newer, loaded after a Home Assistant restart.
 - Home Assistant Core 2026.1.0 or newer stable release, matching HACS' minimum.
 - The official KNX integration must be set up by the cloud commissioning flow
   before processing the upload. The KNX IP interface still needs a reachable,

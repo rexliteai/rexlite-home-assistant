@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.8
+
+- Fix ETS upload failing with `Unknown error` during capability preflight:
+  use Home Assistant's official WebSocket administrator decorator for all four
+  KNX commands instead of calling a nonexistent connection method.
+- Preserve administrator-only access before starting any import or deployment.
+- Test the actual Home Assistant WebSocket dispatcher, administrator and denied
+  access, schema validation, import errors and retries across the supported
+  2026.1+ compatibility matrix.
+- Restart Home Assistant after updating to load the corrected command handlers.
+
 ## 0.1.7
 
 - Reconnect when the heartbeat worker fails; cancel and await pending requests

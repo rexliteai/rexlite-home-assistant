@@ -143,6 +143,7 @@ def main() -> None:
         assert not plan["skipped"], plan["skipped"]
         assert set(plan["config"]) == {"light", "sensor"}, plan["config"]
         for script, arguments in (
+            ("knx_websocket_runtime_check.py", []),
             ("knx_package_runtime_check.py", []),
             ("knx_identity_runtime_check.py", []),
             ("knx_project_import_runtime_check.py", [str(fixture)]),

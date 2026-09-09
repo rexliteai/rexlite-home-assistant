@@ -1119,9 +1119,9 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
     @websocket_api.websocket_command(
         {vol.Required("type"): "rexlite/knx/project_capabilities"}
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def capabilities(hass: Any, connection: Any, msg: dict) -> None:
-        connection.require_admin()
         connection.send_result(msg["id"], await deployer.capabilities())
 
     @websocket_api.websocket_command(
@@ -1132,9 +1132,9 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
             vol.Required("projectFingerprint"): vol.All(str, vol.Match(FINGERPRINT)),
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def process(hass: Any, connection: Any, msg: dict) -> None:
-        connection.require_admin()
         task = hass.async_create_task(
             deployer.process_project(
                 msg["file_id"], msg.get("password", ""), msg["projectFingerprint"]
@@ -1158,9 +1158,9 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
             vol.Required("projectFingerprint"): vol.All(str, vol.Match(FINGERPRINT)),
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def deploy(hass: Any, connection: Any, msg: dict) -> None:
-        connection.require_admin()
         # A client disconnect must not cancel a write or leave HA half-reloaded.
         task = hass.async_create_task(
             deployer.deploy(msg["projectFingerprint"]), "REXLiTE KNX project deployment"
@@ -1173,9 +1173,9 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
             vol.Optional("projectFingerprint"): vol.All(str, vol.Match(FINGERPRINT)),
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def status(hass: Any, connection: Any, msg: dict) -> None:
-        connection.require_admin()
         try:
             result = await deployer.status(msg.get("projectFingerprint"))
         except DeploymentError as err:

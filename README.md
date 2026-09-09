@@ -31,7 +31,7 @@ REXLiTE AI `0.1.7` 新增單次上傳 ETS 工程檔流程：主機核對檔案�
 
 此功能支援 Home Assistant **2026.1.0 或更新的正式版本**。系統會依主機版本使用正確的 KNX 實體識別方式：2026.1–2026.7 配合工程檔的群組位址格式、2026.8 使用固定三層位址識別碼、2026.9 起的新部署可使用自訂識別碼。既有部署升級時會沿用官方實體遷移，保留 entity_id；舊版 Core 若工程檔改變全域位址格式，系統會先停止可能造成重複實體的更新並保留既有設定。
 
-升級至 `0.1.7` 後必須重新啟動 Home Assistant，才會註冊新的主機指令；只重新載入 REXLiTE 設定項目不會載入新版 Python 程式。安裝完成後，日常 ETS 匯入只需在 MAX’Is 選擇目標主機並上傳檔案，不需要另按安裝 KNX 或編輯 YAML。
+請使用 `0.1.8` 或更新版本，修正 `0.1.7` 在 ETS 上傳權限檢查時出現的 `Unknown error`。升級後必須重新啟動 Home Assistant，才會載入修正後的主機指令；只重新載入 REXLiTE 設定項目不會載入新版 Python 程式。安裝完成後，日常 ETS 匯入只需在 MAX’Is 選擇目標主機並上傳檔案，不需要另按安裝 KNX 或編輯 YAML。
 
 原有手寫 KNX YAML 與 include 檔案會保留。產生的內容位於 `/config/.rexlite_knx/entities.yaml`，透過 Home Assistant package 載入；設定檢查或重載失敗時會還原。讀取不到實體狀態與實際控制設備成功是不同狀態，請依介面顯示的可用狀態確認現場連線。管理與相容性細節見 [KNX 自動部署](docs/KNX_AUTO_DEPLOYMENT.md)。
 

@@ -542,8 +542,18 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_is_required_before_every_command(self):
         handlers = []
+
+        def require_admin(fn):
+            def checked(hass, connection, msg):
+                if connection.user is None or not connection.user.is_admin:
+                    raise PermissionError("Admin required")
+                return fn(hass, connection, msg)
+
+            return checked
+
         websocket = types.SimpleNamespace(
             websocket_command=lambda schema: lambda fn: fn,
+            require_admin=require_admin,
             async_response=lambda fn: fn,
             async_register_command=lambda hass, fn: handlers.append(fn),
         )
@@ -551,8 +561,7 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
         components.websocket_api = websocket
 
         class Connection:
-            def require_admin(self):
-                raise PermissionError("Admin required")
+            user = types.SimpleNamespace(is_admin=False)
 
             def send_result(self, *args):
                 raise AssertionError("No result for non-admin")
