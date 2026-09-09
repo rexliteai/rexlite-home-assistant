@@ -11,10 +11,12 @@ import sys
 import tempfile
 import types
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 from homeassistant.components.knx import CONFIG_SCHEMA
 from homeassistant.components.knx import entity as knx_entity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -32,6 +34,79 @@ spec = importlib.util.spec_from_file_location(
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
+
+
+async def check_registry_retirement(hass: HomeAssistant) -> None:
+    """Exercise real registry enums, restored ghost removal and reversible updates."""
+    registry = er.async_get(hass)
+    config_entry = ConfigEntry(
+        domain="knx",
+        title="Offline retirement fixture",
+        unique_id=None,
+        version=1,
+        minor_version=1,
+        source="user",
+        data={},
+        options={},
+        discovery_keys=MappingProxyType({}),
+        subentries_data=[],
+    )
+    with patch.object(
+        hass,
+        "config_entries",
+        types.SimpleNamespace(async_get_entry=lambda entry_id: config_entry),
+    ):
+        entry = registry.async_get_or_create(
+            "switch",
+            "knx",
+            "retirement-switch",
+            suggested_object_id="retirement_switch",
+            config_entry=config_entry,
+        )
+    registry.async_update_entity(entry.entity_id, name="User customized lamp")
+    entry = registry.async_get(entry.entity_id)
+    entry.write_unavailable_state(hass)
+    assert hass.states.get(entry.entity_id).attributes.get("restored")
+    writer = m.ProjectDeployer(hass)
+    module = types.SimpleNamespace(
+        config_yaml={},
+        config_store=types.SimpleNamespace(data={"entities": {}}),
+        group_address_entities={},
+    )
+    record = {
+        "entityId": entry.entity_id,
+        "platform": "switch",
+        "uniqueId": entry.unique_id,
+        "configEntryId": entry.config_entry_id,
+        "addresses": ["1/0/1"],
+        "beforeDisabled": None,
+        "afterDisabled": "integration",
+    }
+    manifest = {
+        "configEntryId": entry.config_entry_id,
+        "identityMode": "custom",
+        "entities": [{"platform": "switch", "uniqueId": entry.unique_id}],
+    }
+    with patch.object(writer, "_module", return_value=module):
+        assert writer._counts(manifest)["loadedCount"] == 0
+        assert writer._registry_change(record)
+        retired = registry.async_get(entry.entity_id)
+        assert retired.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+        assert retired.name == "User customized lamp"
+        assert hass.states.get(entry.entity_id) is None
+        # Replaying after a process interruption is safe and preserves identity.
+        assert writer._registry_change(record)
+        assert writer._registry_change(record, reverse=True)
+        assert registry.async_get(entry.entity_id).disabled_by is None
+        registry.async_update_entity(
+            entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        assert not writer._registry_change(record)
+        assert (
+            registry.async_get(entry.entity_id).disabled_by
+            is er.RegistryEntryDisabler.USER
+        )
+    print("Real HA", __version__, "reversible registry retirement: PASS")
 
 
 async def main() -> None:
@@ -131,6 +206,7 @@ async def main() -> None:
                 count,
                 "constructors across 3 address formats",
             )
+            await check_registry_retirement(hass)
         finally:
             GroupAddress.address_format = original_format
             await hass.async_stop(force=True)

@@ -68,6 +68,36 @@ def sample_conventions():
     )
 
 
+def abbreviated_light():
+    """Independent, synthetic model of a six-role actuator plus a display."""
+    roles = [
+        ("SW", 1, 1),
+        ("SW-FB", 1, 11),
+        ("VAL", 5, 1),
+        ("VAL-FB", 5, 1),
+        ("CT", 7, 600),
+        ("CT-FB", 7, 600),
+    ]
+    groups, objects = [], {}
+    for number, (role, main, sub) in enumerate(roles, start=1):
+        address = f"8/0/{number}"
+        groups.append(ga(address, f"Example-Dali-Light-{role}", main, sub))
+        objects[f"2.1.5/MD-1_M-1_MI-1_O-{number}_R-{number}"] = {
+            "device_address": "2.1.5",
+            "channel": "CH-3",
+            "text": "Output group A",
+            "dpts": [{"main": main, "sub": sub}],
+            "flags": {
+                "communication": True,
+                "read": role.endswith("-FB"),
+                "write": not role.endswith("-FB"),
+                "transmit": role.endswith("-FB"),
+            },
+            "group_address_links": [address],
+        }
+    return project(*groups, objects=objects)
+
+
 def has_ha_distribution():
     try:
         importlib.metadata.version("homeassistant")
@@ -77,6 +107,230 @@ def has_ha_distribution():
 
 
 class KNXProjectMappingTests(unittest.TestCase):
+    def test_abbreviated_roles_merge_full_light_with_display_receivers(self):
+        p = abbreviated_light()
+        # Both group and receiver declarations may use Status while the
+        # producing actuator calls its equivalent on/off feedback Switch.
+        p["communication_objects"]["2.1.5/MD-1_M-1_MI-1_O-2_R-2"]["dpts"] = [
+            {"main": 1, "sub": 1}
+        ]
+        p["communication_objects"]["display"] = {
+            "group_address_links": ["8/0/2"],
+            "dpts": [{"main": 1, "sub": 1}],
+            "flags": {"communication": True, "write": True, "transmit": True},
+        }
+        result = mapper.plan_project(p)
+        self.assertEqual(result["entityCount"], 1)
+        self.assertEqual(result["mappedAddressCount"], 6)
+        light = result["config"]["light"][0]
+        self.assertEqual(light["state_address"], "8/0/2")
+        self.assertEqual(light["brightness_address"], "8/0/3")
+        self.assertEqual(light["brightness_state_address"], "8/0/4")
+        self.assertEqual(light["color_temperature_address"], "8/0/5")
+        self.assertEqual(light["color_temperature_state_address"], "8/0/6")
+        self.assertEqual(light["color_temperature_mode"], "absolute")
+        self.assertEqual(result["entities"][0]["source"], "exact-name-object-channel")
+
+    def test_abbreviated_pair_requires_same_device_and_module_instance(self):
+        for incompatible in ("3.1.5", "2.1.5/MD-1_M-1_MI-2_O-2_R-2"):
+            with self.subTest(incompatible=incompatible):
+                p = abbreviated_light()
+                objects = p["communication_objects"]
+                obj = objects.pop("2.1.5/MD-1_M-1_MI-1_O-2_R-2")
+                if "/" in incompatible:
+                    objects[incompatible] = obj
+                else:
+                    obj["device_address"] = incompatible
+                    objects["2.1.5/MD-1_M-1_MI-1_O-2_R-2"] = obj
+                result = mapper.plan_project(p)
+                self.assertNotIn("state_address", result["config"]["light"][0])
+                self.assertEqual(
+                    result["config"]["binary_sensor"][0]["state_address"], "8/0/2"
+                )
+
+    def test_channel_text_fallback_distinguishes_non_modular_outputs(self):
+        p = abbreviated_light()
+        objects = p["communication_objects"]
+        for number in (1, 2):
+            obj = objects.pop(f"2.1.5/MD-1_M-1_MI-1_O-{number}_R-{number}")
+            obj["channel"] = None
+            obj["text"] = "Channel A"
+            objects[f"2.1.5/O-{number}"] = obj
+        first = mapper.plan_project(p)["config"]["light"][0]
+        self.assertEqual(first["state_address"], "8/0/2")
+        objects["2.1.5/O-2"]["text"] = "Channel B"
+        second = mapper.plan_project(p)["config"]["switch"][0]
+        self.assertNotIn("state_address", second)
+
+    def test_switch_status_conflict_not_relaxed_without_same_channel_proof(self):
+        p = abbreviated_light()
+        obj = p["communication_objects"]["2.1.5/MD-1_M-1_MI-1_O-2_R-2"]
+        obj["dpts"] = [{"main": 1, "sub": 1}]
+        obj["device_address"] = "3.1.5"
+        result = mapper.plan_project(p)
+        self.assertNotIn("state_address", result["config"]["light"][0])
+        self.assertIn(
+            {"address": "8/0/2", "reason": "conflicting_datapoint_type"},
+            result["skipped"],
+        )
+
+    def test_true_optional_dpt_conflict_does_not_erase_proven_light(self):
+        for main, sub in ((5, 4), (9, 1)):
+            with self.subTest(dpt=(main, sub)):
+                p = abbreviated_light()
+                p["communication_objects"]["2.1.5/MD-1_M-1_MI-1_O-3_R-3"]["dpts"] = [
+                    {"main": main, "sub": sub}
+                ]
+                result = mapper.plan_project(p)
+                light = result["config"]["light"][0]
+                self.assertEqual(light["state_address"], "8/0/2")
+                self.assertNotIn("brightness_address", light)
+                self.assertNotIn("brightness_state_address", light)
+                self.assertEqual(light["color_temperature_address"], "8/0/5")
+                self.assertIn(
+                    {"address": "8/0/3", "reason": "conflicting_datapoint_type"},
+                    result["skipped"],
+                )
+
+    def test_incompatible_color_temperature_preserves_brightness_channel(self):
+        p = abbreviated_light()
+        p["group_addresses"]["8/0/5"]["dpt"] = {"main": 5, "sub": 1}
+        result = mapper.plan_project(p)
+        light = result["config"]["light"][0]
+        self.assertEqual(light["brightness_state_address"], "8/0/4")
+        self.assertNotIn("color_temperature_address", light)
+        self.assertNotIn("color_temperature_state_address", light)
+        self.assertNotIn("color_temperature_mode", light)
+
+    def test_explicit_ga_selects_declared_alternative_but_never_incompatible_object(
+        self,
+    ):
+        p = abbreviated_light()
+        obj = p["communication_objects"]["2.1.5/MD-1_M-1_MI-1_O-3_R-3"]
+        obj["dpts"] = [{"main": 5, "sub": 1}, {"main": 5, "sub": 4}]
+        light = mapper.plan_project(p)["config"]["light"][0]
+        self.assertEqual(light["brightness_address"], "8/0/3")
+        p["communication_objects"]["other"] = {
+            "group_address_links": ["8/0/3"],
+            "dpts": [{"main": 5, "sub": 4}],
+        }
+        self.assertNotIn(
+            "brightness_address", mapper.plan_project(p)["config"]["light"][0]
+        )
+
+    def test_feedback_input_with_write_flag_is_observation_only(self):
+        p = project(
+            ga("8/1/1", "Example-ReedSensor-ACTIVE-FB", 1, 1),
+            objects={
+                "contact": {
+                    "group_address_links": ["8/1/1"],
+                    "dpts": [{"main": 1, "sub": 1}],
+                    "flags": {
+                        "communication": True,
+                        "write": True,
+                        "transmit": True,
+                        "read": False,
+                    },
+                }
+            },
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("switch", result["config"])
+        self.assertEqual(result["config"]["binary_sensor"][0]["sync_state"], False)
+        p["communication_objects"]["contact"]["flags"]["transmit"] = False
+        self.assertEqual(mapper.plan_project(p)["entityCount"], 0)
+
+    def test_duplicate_optional_role_is_not_selected_arbitrarily(self):
+        p = abbreviated_light()
+        p["group_addresses"]["8/0/7"] = ga("8/0/7", "Example-Dali-Light-VAL", 5, 1)
+        result = mapper.plan_project(p)
+        light = result["config"]["light"][0]
+        self.assertEqual(light["state_address"], "8/0/2")
+        self.assertNotIn("brightness_address", light)
+        self.assertEqual({s["address"] for s in result["skipped"]}, {"8/0/3", "8/0/7"})
+
+    def test_abbreviations_without_actuator_objects_never_join_by_name_alone(self):
+        p = abbreviated_light()
+        p["communication_objects"] = {}
+        result = mapper.plan_project(p)
+        self.assertNotIn("light", result["config"])
+
+    def test_fanout_command_never_uses_one_actuators_feedback_as_aggregate(self):
+        p = abbreviated_light()
+        extra = copy.deepcopy(p["communication_objects"]["2.1.5/MD-1_M-1_MI-1_O-1_R-1"])
+        extra["device_address"] = "2.1.6"
+        p["communication_objects"]["2.1.6/MD-1_M-1_MI-1_O-1_R-1"] = extra
+        result = mapper.plan_project(p)
+        self.assertNotIn("light", result["config"])
+        self.assertNotIn("state_address", result["config"]["switch"][0])
+
+    def test_multiple_feedback_producers_never_pick_first_matching_channel(self):
+        p = abbreviated_light()
+        extra = copy.deepcopy(p["communication_objects"]["2.1.5/MD-1_M-1_MI-1_O-2_R-2"])
+        extra["device_address"] = "2.1.6"
+        p["communication_objects"]["2.1.6/MD-1_M-1_MI-1_O-2_R-2"] = extra
+        result = mapper.plan_project(p)
+        self.assertNotIn("state_address", result["config"]["light"][0])
+
+    def test_command_only_abbreviation_preserves_existing_switch_fallback(self):
+        p = abbreviated_light()
+        p["group_addresses"] = {"8/0/1": p["group_addresses"]["8/0/1"]}
+        result = mapper.plan_project(p)
+        self.assertNotIn("light", result["config"])
+        self.assertEqual(result["config"]["switch"][0]["address"], "8/0/1")
+
+    def test_explicit_sender_scene_parameter_allows_recall_compatible_types(self):
+        group = ga("8/2/1", "Example arbitrary scene label", 18, 1)
+        group.update(
+            scene_number=6,
+            scene_number_source="ets-sender-parameter",
+            scene_sender_ids=["sender"],
+        )
+        p = project(
+            group,
+            objects={
+                "sender": {
+                    "group_address_links": ["8/2/1"],
+                    "dpts": [{"main": 18, "sub": 1}],
+                    "flags": {"communication": True, "transmit": True},
+                },
+                "receiver": {
+                    "group_address_links": ["8/2/1"],
+                    "dpts": [{"main": 17, "sub": 1}],
+                    "flags": {"communication": True, "write": True},
+                },
+            },
+        )
+        result = mapper.plan_project(p)
+        self.assertEqual(result["entityCount"], 1)
+        self.assertEqual(result["config"]["scene"][0]["scene_number"], 6)
+        self.assertEqual(result["entities"][0]["source"], "ets-sender-scene-parameter")
+        for invalid in (None, 0, 65, True, "6"):
+            group["scene_number"] = invalid
+            self.assertEqual(mapper.plan_project(p)["entityCount"], 0)
+        group["scene_number"] = 6
+        for change in (
+            {"scene_number_source": "name"},
+            {"scene_sender_ids": []},
+            {"scene_sender_ids": ["not-linked"]},
+            {"scene_sender_ids": [None]},
+        ):
+            broken = copy.deepcopy(p)
+            broken["group_addresses"]["8/2/1"].update(change)
+            self.assertEqual(mapper.plan_project(broken)["entityCount"], 0)
+        for change in (
+            {"transmit": False},
+            {"communication": False},
+        ):
+            broken = copy.deepcopy(p)
+            broken["communication_objects"]["sender"]["flags"].update(change)
+            self.assertEqual(mapper.plan_project(broken)["entityCount"], 0)
+        p["communication_objects"]["receiver"]["flags"]["write"] = False
+        self.assertEqual(mapper.plan_project(p)["entityCount"], 0)
+        p["communication_objects"]["receiver"]["flags"]["write"] = True
+        p["communication_objects"]["receiver"]["dpts"] = [{"main": 5, "sub": 1}]
+        self.assertEqual(mapper.plan_project(p)["entityCount"], 0)
+
     def test_exact_conventions_map_five_entities_and_leave_scene_unresolved(self):
         result = mapper.plan_project(sample_conventions())
         self.assertEqual(result["entityCount"], 5)
@@ -352,6 +606,7 @@ class KNXProjectMappingTests(unittest.TestCase):
         scene["scene_number"] = 13
         samples = [
             sample_conventions(),
+            abbreviated_light(),
             project(
                 ga("5/0/1", "AC 室內溫度", 9, 1),
                 ga("5/0/2", "AC 目標溫度", 9, 1),

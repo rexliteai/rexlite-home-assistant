@@ -35,6 +35,8 @@ REXLiTE AI `0.1.7` 新增單次上傳 ETS 工程檔流程：主機核對檔案�
 
 原有手寫 KNX YAML 與 include 檔案會保留。產生的內容位於 `/config/.rexlite_knx/entities.yaml`，透過 Home Assistant package 載入；設定檢查或重載失敗時會還原。讀取不到實體狀態與實際控制設備成功是不同狀態，請依介面顯示的可用狀態確認現場連線。管理與相容性細節見 [KNX 自動部署](docs/KNX_AUTO_DEPLOYMENT.md)。
 
+`0.1.10` 改善控制與回饋配對：依完全相同的名稱前綴、執行器通道、DPT 與通訊物件旗標，把 `SW/SW-FB`、`VAL/VAL-FB`、`CT/CT-FB` 合併為燈具。部分已驗證 ETS 應用程式可從明確參數還原場景編號；不支援的版型或資料不完整的位址仍保留手動補齊。升級並重啟 Home Assistant 後，重新上傳原工程檔即可套用新版配對規則。被合併的舊自動實體會保留登錄資料並停用，新實體可在 Home Assistant 中查看。
+
 ## 支援環境
 
 本整合支援下列 Home Assistant 安裝方式：

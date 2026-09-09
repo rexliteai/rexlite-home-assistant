@@ -292,6 +292,7 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
         (self.root / "configuration.yaml").write_text("default_config:\n")
         self.project = {"info": {"name": "test"}}
         self.registry_entries, self.states = {}, {}
+        self.registry_updates = []
         self.reload_calls = 0
         self.fail_reload = False
         self.spoof_config = False
@@ -308,7 +309,10 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
             data={"knx": self.module},
             async_add_executor_job=self.executor,
             config_entries=types.SimpleNamespace(async_reload=self.reload),
-            states=types.SimpleNamespace(get=self.states.get),
+            states=types.SimpleNamespace(
+                get=self.states.get,
+                async_remove=lambda entity_id: self.states.pop(entity_id, None),
+            ),
         )
         self.writer = m.ProjectDeployer(self.hass)
         self.writer.files.write_json(
@@ -329,6 +333,7 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
                 None,
             ),
             async_get=self.registry_entries.get,
+            async_update_entity=self.update_registry,
         )
         config_module = types.ModuleType("homeassistant.config")
         config_module.async_hass_config_yaml = self.load
@@ -340,7 +345,9 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
             SENSOR="sensor", BINARY_SENSOR="binary_sensor", SWITCH="switch"
         )
         helpers = types.ModuleType("homeassistant.helpers")
-        helpers.entity_registry = types.SimpleNamespace(async_get=lambda hass: registry)
+        helpers.entity_registry = types.SimpleNamespace(
+            async_get=lambda hass: registry, RegistryEntryDisabler=str
+        )
         self.patch_modules = patch.dict(
             sys.modules,
             {
@@ -397,6 +404,124 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("already_exists", result["error"])
 
+    async def test_mapper_upgrade_preserves_manual_mapping_and_adds_other_improvements(
+        self,
+    ):
+        await self.writer.deploy(FINGERPRINT)
+        source = (
+            "knx:\n  light:\n    - name: User mapped lamp\n"
+            '      address: "3/0/8"\n      state_address: "3/0/9"\n'
+        )
+        checked = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, check_only=True
+        )
+        await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, baseline=checked["fingerprint"]
+        )
+        original_manual = self.writer.files.read_json(m.MANIFEST)["manualPlan"]
+        manual_uid = original_manual["entities"][0]["uniqueId"]
+        manual_entry = self.registry_entries[f"light.{manual_uid}"]
+        manual_entry.name = "User customized lamp"
+        upgraded = deepcopy(PLAN)
+        upgraded["config"]["switch"] = [
+            {
+                "name": "Auto rediscovered lamp",
+                "address": "3/0/8",
+                "unique_id": "auto-clash",
+            }
+        ]
+        upgraded["config"]["light"].append(
+            {"name": "Newly mapped lamp", "address": "3/0/10", "unique_id": "auto-new"}
+        )
+        upgraded["entities"].extend(
+            [
+                {
+                    "platform": "switch",
+                    "uniqueId": "auto-clash",
+                    "addresses": ["3/0/8"],
+                },
+                {"platform": "light", "uniqueId": "auto-new", "addresses": ["3/0/10"]},
+            ]
+        )
+        upgraded["entityCount"] = 4
+        result = await self.deploy_plan(upgraded)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(result["entityCount"], 4)
+        configured = load_config(self.root)["knx"]
+        self.assertNotIn("switch", configured)
+        self.assertIn(original_manual["config"]["light"][0], configured["light"])
+        self.assertIn("light.auto-new", self.states)
+        self.assertIs(self.registry_entries[f"light.{manual_uid}"], manual_entry)
+        self.assertEqual(manual_entry.name, "User customized lamp")
+        self.assertIsNone(manual_entry.disabled_by)
+        self.assertEqual(
+            self.writer.files.read_json(m.MANIFEST)["manualPlan"], original_manual
+        )
+
+    async def test_mapper_upgrade_preserves_manual_scene_and_distinct_scene_numbers(
+        self,
+    ):
+        await self.writer.deploy(FINGERPRINT)
+        source = (
+            "knx:\n  scene:\n    - name: Confirmed scene\n"
+            '      address: "4/0/1"\n      scene_number: 2\n'
+        )
+        checked = await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, check_only=True
+        )
+        await self.writer.deploy(
+            FINGERPRINT, manual_yaml=source, baseline=checked["fingerprint"]
+        )
+        original_manual = self.writer.files.read_json(m.MANIFEST)["manualPlan"]
+        upgraded = deepcopy(PLAN)
+        upgraded["config"]["scene"] = [
+            {
+                "name": f"New automatic scene {number}",
+                "address": "4/0/1",
+                "scene_number": number,
+                "unique_id": f"auto-scene-{number}",
+            }
+            for number in (2, 3)
+        ]
+        upgraded["entities"].extend(
+            {
+                "platform": "scene",
+                "uniqueId": f"auto-scene-{number}",
+                "addresses": ["4/0/1"],
+            }
+            for number in (2, 3)
+        )
+        upgraded["entityCount"] = 4
+        result = await self.deploy_plan(upgraded)
+        self.assertEqual(result["status"], "completed", result)
+        scenes = load_config(self.root)["knx"]["scene"]
+        self.assertEqual(sorted(row["scene_number"] for row in scenes), [2, 3])
+        self.assertIn(original_manual["config"]["scene"][0], scenes)
+        self.assertNotIn("scene.auto-scene-2", self.registry_entries)
+        for mode in ("native", "legacy"):
+            with self.subTest(mode=mode):
+                plan = m.adapt_plan_identity(upgraded, mode, "FREE")
+                manual = m.adapt_plan_identity(original_manual, mode, "FREE")
+                merged = m.preserve_manual_plan(plan, manual, "FREE")
+                self.assertEqual(
+                    sorted(row["scene_number"] for row in merged["config"]["scene"]),
+                    [2, 3],
+                )
+
+    def test_manual_feedback_collision_keeps_uncovered_command_visible_for_review(self):
+        _, auto = self.pairing_plans()
+        manual = m.manual_yaml_plan(
+            "knx:\n  binary_sensor:\n    - name: Confirmed feedback\n"
+            '      state_address: "1/0/2"\n'
+        )
+        merged = m.preserve_manual_plan(auto, manual)
+        self.assertEqual(merged["config"], manual["config"])
+        self.assertEqual(merged["entityCount"], 1)
+        self.assertEqual(
+            merged["skipped"],
+            [{"address": "1/0/1", "reason": "existing_manual_or_ui_entity_preserved"}],
+        )
+
     async def test_manual_yaml_reload_failure_rolls_back(self):
         source = 'knx:\n  switch:\n    - name: Manual\n      address: "3/0/8"\n'
         checked = await self.writer.deploy(
@@ -425,27 +550,42 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
             raise ValueError("invalid schema")
         return deepcopy(value)
 
+    def update_registry(self, entity_id, *, disabled_by):
+        self.registry_updates.append((entity_id, disabled_by))
+        self.registry_entries[entity_id].disabled_by = disabled_by
+        return self.registry_entries[entity_id]
+
     async def reload(self, entry_id):
         self.reload_calls += 1
         if self.fail_reload and self.reload_calls == 1:
             return False
         self.module.config_yaml = load_config(self.root).get("knx", {})
-        self.registry_entries.clear()
         self.states.clear()
+        for entity_id, entry in self.registry_entries.items():
+            if not entry.disabled_by:
+                self.states[entity_id] = types.SimpleNamespace(
+                    state="unavailable", attributes={"restored": True}
+                )
         for platform, rows in self.module.config_yaml.items():
             for row in rows:
                 uid = m.row_identity(platform, row, self.writer._identity_format())
                 if not uid:
                     continue
                 entity_id = f"{platform}.{uid}"
-                self.registry_entries[entity_id] = types.SimpleNamespace(
-                    unique_id=uid,
-                    domain=platform,
-                    config_entry_id=entry_id,
-                    disabled_by=None,
+                entry = self.registry_entries.setdefault(
+                    entity_id,
+                    types.SimpleNamespace(
+                        unique_id=uid,
+                        domain=platform,
+                        platform="knx",
+                        config_entry_id=entry_id,
+                        disabled_by=None,
+                    ),
                 )
+                if entry.disabled_by:
+                    continue
                 self.states[entity_id] = types.SimpleNamespace(
-                    state="off" if platform == "light" else "unknown"
+                    state="off" if platform == "light" else "unknown", attributes={}
                 )
         if self.spoof_config:
             self.module.config_yaml["light"][0]["address"] = "3/0/9"
@@ -464,6 +604,220 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
         fresh = m.ProjectDeployer(self.hass)
         fresh._schema = self.schema
         self.assertEqual(await fresh.status(FINGERPRINT), result)
+
+    @staticmethod
+    def pairing_plans():
+        old = {
+            "projectId": "test-project",
+            "entityCount": 2,
+            "skipped": [],
+            "config": {
+                "switch": [
+                    {"name": "Lamp SW", "address": "1/0/1", "unique_id": "old-sw"}
+                ],
+                "binary_sensor": [
+                    {
+                        "name": "Lamp FB",
+                        "state_address": "1/0/2",
+                        "unique_id": "old-fb",
+                    }
+                ],
+            },
+            "entities": [
+                {"platform": "switch", "uniqueId": "old-sw", "addresses": ["1/0/1"]},
+                {
+                    "platform": "binary_sensor",
+                    "uniqueId": "old-fb",
+                    "addresses": ["1/0/2"],
+                },
+            ],
+        }
+        new = {
+            "projectId": "test-project",
+            "entityCount": 1,
+            "skipped": [],
+            "config": {
+                "light": [
+                    {
+                        "name": "Lamp",
+                        "address": "1/0/1",
+                        "state_address": "1/0/2",
+                        "unique_id": "new-light",
+                    }
+                ]
+            },
+            "entities": [
+                {
+                    "platform": "light",
+                    "uniqueId": "new-light",
+                    "addresses": ["1/0/1", "1/0/2"],
+                }
+            ],
+        }
+        return old, new
+
+    async def deploy_plan(self, plan):
+        # Force replanning as if the mapper was upgraded or its plan changed.
+        with (
+            patch.object(m, "plan_project", return_value=deepcopy(plan)),
+            patch.object(m, "MAPPER_REVISION", self.reload_calls + 100),
+        ):
+            return await self.writer.deploy(FINGERPRINT)
+
+    async def test_pairing_upgrade_retires_ghosts_and_preserves_registry_settings(self):
+        old, new = self.pairing_plans()
+        await self.deploy_plan(old)
+        entry = self.registry_entries["switch.old-sw"]
+        entry.name, entry.area_id = "User lamp", "living-room"
+        result = await self.deploy_plan(new)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(result["loadedCount"], 1)
+        self.assertEqual(set(self.states), {"light.new-light"})
+        self.assertEqual(entry.disabled_by, "integration")
+        self.assertEqual((entry.name, entry.area_id), ("User lamp", "living-room"))
+        self.assertEqual(
+            self.registry_entries["binary_sensor.old-fb"].disabled_by, "integration"
+        )
+        manifest = self.writer.files.read_json(m.MANIFEST)
+        self.assertEqual(len(manifest["retiredEntities"]), 2)
+        self.assertTrue(
+            all(item["replacements"] for item in manifest["retiredEntities"])
+        )
+        await self.deploy_plan(new)
+        self.assertEqual(len(self.registry_updates), 2)
+        self.assertEqual(
+            len(self.writer.files.read_json(m.MANIFEST)["retiredEntities"]), 2
+        )
+
+    async def test_pairing_upgrade_reintroduction_restores_only_our_disabled_entries(
+        self,
+    ):
+        old, new = self.pairing_plans()
+        await self.deploy_plan(old)
+        await self.deploy_plan(new)
+        result = await self.deploy_plan(old)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertIsNone(self.registry_entries["switch.old-sw"].disabled_by)
+        self.assertIsNone(self.registry_entries["binary_sensor.old-fb"].disabled_by)
+        self.assertEqual(set(self.states), {"switch.old-sw", "binary_sensor.old-fb"})
+        retired = self.writer.files.read_json(m.MANIFEST)["retiredEntities"]
+        self.assertEqual([item["entityId"] for item in retired], ["light.new-light"])
+        self.registry_entries["light.new-light"].disabled_by = "user"
+        self.assertEqual(
+            self.writer._registry_restorations({"retiredEntities": retired}, new), []
+        )
+
+    async def test_restored_unavailable_registry_state_is_not_a_loaded_entity(self):
+        await self.writer.deploy(FINGERPRINT)
+        manifest = self.writer.files.read_json(m.MANIFEST)
+        self.states["light.auto-light"] = types.SimpleNamespace(
+            state="unavailable", attributes={"restored": True}
+        )
+        self.assertEqual(self.writer._counts(manifest)["loadedCount"], 1)
+        self.states["light.auto-light"].attributes.clear()
+        self.assertEqual(self.writer._counts(manifest)["loadedCount"], 2)
+
+    async def test_same_platform_enrichment_keeps_original_identity(self):
+        old, new = self.pairing_plans()
+        new["config"]["switch"] = new["config"].pop("light")
+        new["config"]["switch"][0]["unique_id"] = "old-sw"
+        new["entities"][0].update(platform="switch", uniqueId="old-sw")
+        await self.deploy_plan(old)
+        entry = self.registry_entries["switch.old-sw"]
+        entry.name = "User lamp"
+        result = await self.deploy_plan(new)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertIs(self.registry_entries["switch.old-sw"], entry)
+        self.assertIsNone(entry.disabled_by)
+        self.assertEqual(entry.name, "User lamp")
+        self.assertEqual(set(self.states), {"switch.old-sw"})
+
+    async def test_retirement_preserves_manual_ui_live_and_user_disabled_entities(self):
+        old, new = self.pairing_plans()
+        await self.deploy_plan(old)
+        previous = self.writer.files.read_json(m.MANIFEST)
+        manifest = {**new, "configEntryId": "knx-entry"}
+        self.module.config_yaml = new["config"]
+        for state in self.states.values():
+            state.attributes["restored"] = True
+        self.assertEqual(len(self.writer._registry_retirements(previous, manifest)), 2)
+        self.registry_entries["switch.old-sw"].disabled_by = "user"
+        previous["manualPlan"] = {"entities": [old["entities"][1]]}
+        self.assertEqual(self.writer._registry_retirements(previous, manifest), [])
+        previous.pop("manualPlan")
+        self.module.config_store.data["entities"] = {"manual": {"state": "1/0/2"}}
+        self.assertEqual(self.writer._registry_retirements(previous, manifest), [])
+        self.module.config_store.data["entities"] = {}
+        self.states["binary_sensor.old-fb"].attributes.clear()
+        self.assertEqual(self.writer._registry_retirements(previous, manifest), [])
+        self.states["binary_sensor.old-fb"].attributes["restored"] = True
+        self.module.config_yaml["binary_sensor"] = old["config"]["binary_sensor"]
+        self.assertEqual(self.writer._registry_retirements(previous, manifest), [])
+
+    async def test_upgrade_verification_failure_never_retires_old_entities(self):
+        old, new = self.pairing_plans()
+        await self.deploy_plan(old)
+        with patch.object(
+            self.writer,
+            "_verify_configuration",
+            side_effect=m.DeploymentError("verification_failed"),
+        ):
+            result = await self.deploy_plan(new)
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["stage"], "rolled_back", result)
+        self.assertEqual(self.registry_updates, [])
+        self.assertIsNone(self.registry_entries["switch.old-sw"].disabled_by)
+
+    async def test_registry_mutation_failure_rolls_back_yaml_and_disablers(self):
+        old, new = self.pairing_plans()
+        await self.deploy_plan(old)
+        before = self.writer.files.read(m.GENERATED)
+        original = self.writer._registry_change
+        calls = 0
+
+        def fail_second(record, *, reverse=False):
+            nonlocal calls
+            if not reverse:
+                calls += 1
+                if calls == 2:
+                    raise RuntimeError("injected registry failure")
+            return original(record, reverse=reverse)
+
+        with patch.object(self.writer, "_registry_change", side_effect=fail_second):
+            result = await self.deploy_plan(new)
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["stage"], "rolled_back", result)
+        self.assertEqual(self.writer.files.read(m.GENERATED), before)
+        self.assertIsNone(self.registry_entries["switch.old-sw"].disabled_by)
+        self.assertIsNone(self.registry_entries["binary_sensor.old-fb"].disabled_by)
+        self.assertFalse(self.states["switch.old-sw"].attributes.get("restored"))
+
+    async def test_registry_crash_recovery_and_external_disable_are_preserved(self):
+        old, new = self.pairing_plans()
+        await self.deploy_plan(old)
+        original = self.writer._registry_change
+
+        class SimulatedCrash(BaseException):
+            pass
+
+        def crash_after_first(record, *, reverse=False):
+            original(record, reverse=reverse)
+            raise SimulatedCrash
+
+        with (
+            patch.object(
+                self.writer, "_registry_change", side_effect=crash_after_first
+            ),
+            self.assertRaises(SimulatedCrash),
+        ):
+            await self.deploy_plan(new)
+        self.assertIsNotNone(self.writer.files.read(m.JOURNAL))
+        self.registry_entries["switch.old-sw"].disabled_by = "user"
+        await self.writer.recover()
+        self.assertEqual(self.registry_entries["switch.old-sw"].disabled_by, "user")
+        self.assertIsNone(self.registry_entries["binary_sensor.old-fb"].disabled_by)
+        self.assertEqual(load_config(self.root)["knx"], old["config"])
+        self.assertIsNone(self.writer.files.read(m.JOURNAL))
 
     async def test_reload_failure_restores_originals_and_persists_outcome(self):
         original = (self.root / "configuration.yaml").read_bytes()
@@ -552,6 +906,41 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
             [value["status"] for value in result], ["completed", "completed"]
         )
         self.assertEqual(self.reload_calls, 1)
+
+    async def test_new_mapper_revision_replans_same_file_once_and_keeps_identity(self):
+        await self.writer.deploy(FINGERPRINT)
+        previous = self.writer.files.read_json(m.MANIFEST)
+        previous.pop("mapperRevision")  # Deployment made before mapping revisions.
+        self.writer.files.write_json(m.MANIFEST, previous)
+        improved = deepcopy(PLAN)
+        improved["config"]["light"][0]["state_address"] = "1/0/9"
+        improved["entities"][0]["addresses"].append("1/0/9")
+        with patch.object(m, "plan_project", return_value=improved):
+            upgraded = await self.writer.deploy(FINGERPRINT)
+            self.assertEqual(upgraded["status"], "completed", upgraded)
+            self.assertEqual(self.reload_calls, 2)
+            generated = load_config(self.root)["knx"]
+            self.assertEqual(generated["light"][0]["state_address"], "1/0/9")
+            self.assertEqual(generated["light"][0]["unique_id"], "auto-light")
+            self.assertEqual(
+                self.writer.files.read_json(m.MANIFEST)["mapperRevision"],
+                m.MAPPER_REVISION,
+            )
+            await self.writer.deploy(FINGERPRINT)
+            self.assertEqual(self.reload_calls, 2)
+
+    async def test_failed_mapping_upgrade_restores_previous_working_revision(self):
+        await self.writer.deploy(FINGERPRINT)
+        previous = self.writer.files.read_json(m.MANIFEST)
+        previous["mapperRevision"] = 1
+        self.writer.files.write_json(m.MANIFEST, previous)
+        before = self.writer.files.read(m.GENERATED)
+        self.reload_calls = 0
+        self.fail_reload = True
+        result = await self.writer.deploy(FINGERPRINT)
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(self.writer.files.read(m.GENERATED), before)
+        self.assertEqual(self.writer.files.read_json(m.MANIFEST)["mapperRevision"], 1)
 
     async def test_crash_journal_recovers_original_config(self):
         before, after = b"default_config:\n", b"default_config:\n# partial write\n"

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.10
+
+- Pair exact SW/SW-FB, VAL/VAL-FB and CT/CT-FB addresses using matching
+  actuator-channel metadata, DPTs and communication-object flags. Combine
+  supported light control and feedback into one entity.
+- Resolve compatible switch/status feedback declarations only with proven
+  channel evidence; preserve incompatible or incomplete mappings for review.
+- Recover explicit scene numbers from verified ETS sender-application parameter
+  layouts. Unsupported or protected layouts remain available for manual review.
+- Replan previously imported files when the mapping revision changes, while
+  preserving manual YAML and transactional recovery.
+- Reversibly disable superseded managed entities after verification, preserving
+  registry customizations; exclude restored registry ghosts from loaded counts.
+
+## 0.1.9
+
+- Support bounded 100 MiB ETS transfers with chunk retries, owner checks,
+  SHA-256 verification and temporary-file cleanup.
+- Add validated manual KNX YAML deployment with preflight checks and rollback.
+- Preserve compatibility with Home Assistant 2026.1 and newer.
+
 ## 0.1.8
 
 - Fix ETS upload failing with `Unknown error` during capability preflight:

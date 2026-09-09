@@ -17,6 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
+MAPPER_REVISION = 2
 
 # role: (YAML field, allowed exact DPTs). Names here are semantic roles, not GA
 # names. Standard ETS roles include AbsoluteSetvalueControl/ActualDimmingValue.
@@ -109,6 +110,7 @@ TELEMETRY_DPTS = MEASUREMENT_DPTS | {
     (7, 4),
     (7, 5),
     (7, 6),
+    (7, 600),
     (12, 1),
     (13, 1),
     (13, 10),
@@ -119,6 +121,17 @@ TELEMETRY_DPTS = MEASUREMENT_DPTS | {
 LIGHT_TYPES = {"switchablelight", "dimmablelight", "light", "ft1", "ft6"}
 COVER_TYPES = {"sunprotection", "cover", "blinds", "ft7"}
 CLIMATE_TYPES = {"heatingradiator", "heatingfloor", "climate", "hvac", "ft8"}
+
+# Installer abbreviations require communication-object channel evidence below;
+# they are deliberately not added to the name-only convention table.
+ABBREVIATED_ROLES = {
+    "SW": ("address", {(1, 1)}),
+    "SW-FB": ("state_address", {(1, 1), (1, 11)}),
+    "VAL": ("brightness_address", {(5, 1)}),
+    "VAL-FB": ("brightness_state_address", {(5, 1)}),
+    "CT": ("color_temperature_address", {(7, 600)}),
+    "CT-FB": ("color_temperature_state_address", {(7, 600)}),
+}
 
 
 def _semantic(value: Any) -> str:
@@ -185,6 +198,7 @@ class _Planner:
         self.aliases: dict[str, str] = {}
         self.objects: dict[str, list[dict]] = defaultdict(list)
         self.dpts: dict[str, tuple[int, int]] = {}
+        self.dpt_choices: dict[str, set[tuple[int, int | None] | None]] = {}
         self.issues: dict[str, str] = {}
         self.blocked: set[str] = set()
         self.used: set[str] = set()
@@ -223,7 +237,9 @@ class _Planner:
                 if isinstance(item, str)
             } | linked_ids[address]
             linked = [
-                _dict(objects[item]) for item in sorted(object_ids) if item in objects
+                {**_dict(objects[item]), "_object_id": item}
+                for item in sorted(object_ids)
+                if item in objects
             ]
             self.objects[address] = linked
             candidates = []
@@ -233,6 +249,27 @@ class _Planner:
                 candidates.extend(_dpt(dpt) for dpt in _list(obj.get("dpts")))
             exact = {dpt for dpt in candidates if dpt and dpt[1] is not None}
             mains = {dpt[0] for dpt in candidates if dpt}
+            self.dpt_choices[address] = set(candidates)
+            # An object's list declares supported alternatives, not simultaneous
+            # wire encodings. An explicit GA subtype can select one only when
+            # every declared object accepts that exact type (or its main type).
+            declared = _dpt(ga.get("dpt"))
+            if (
+                declared
+                and declared[1] is not None
+                and all(
+                    not (options := _list(obj.get("dpts")))
+                    or (
+                        all(_dpt(option) is not None for option in options)
+                        and any(
+                            _dpt(option) in {declared, (declared[0], None)}
+                            for option in options
+                        )
+                    )
+                    for obj in linked
+                )
+            ):
+                exact, mains = {declared}, {declared[0]}
             if None in candidates or len(exact) != 1 or len(mains) != 1:
                 self.issues[address] = (
                     "conflicting_datapoint_type"
@@ -249,6 +286,170 @@ class _Planner:
             and _dict(obj.get("flags")).get(flag) is True
             for obj in self.objects[address]
         )
+
+    @staticmethod
+    def _channel_key(obj: dict) -> tuple[str, ...] | None:
+        """Identify a channel without confusing multi-instance panel modules."""
+        device = obj.get("device_address")
+        if not isinstance(device, str) or not device:
+            return None
+        object_id = str(obj.get("_object_id", ""))
+        module = re.search(r"/(MD-[^/]+)_O-", object_id)
+        channel = str(obj.get("channel") or "")
+        if module:
+            return device, "module", module.group(1), channel
+        text = _label(obj.get("text"), "")
+        if text:
+            return device, "channel", channel, text
+        return None
+
+    def _actuator_keys(self, address: str, *, feedback: bool) -> set[tuple]:
+        keys = set()
+        for obj in self.objects[address]:
+            flags = _dict(obj.get("flags"))
+            if flags.get("communication") is not True:
+                continue
+            if feedback:
+                # A receiver/display may also be writable on a feedback GA.
+                # Use the producing actuator's flags, not the union of flags.
+                proven = (
+                    flags.get("write") is False
+                    and flags.get("read") is True
+                    and flags.get("transmit") is True
+                )
+            else:
+                proven = flags.get("write") is True and flags.get("transmit") is False
+            if proven and (key := self._channel_key(obj)):
+                keys.add(key)
+        return keys
+
+    def abbreviated_groups(self) -> None:
+        """Join proven actuator channels with exact SW/VAL/CT installer roles."""
+        grouped: dict[str, dict[str, list[str]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        names = {}
+        for address, ga in sorted(self.groups.items()):
+            if address in self.used:
+                continue
+            match = re.fullmatch(
+                r"(.+?)[\s_-]+(SW-FB|VAL-FB|CT-FB|SW|VAL|CT)",
+                _label(ga.get("name"), ""),
+                re.IGNORECASE,
+            )
+            if match:
+                name, role = match.groups()
+                key = name.casefold()
+                names[key] = name
+                grouped[key][role.upper()].append(address)
+        for key, roles in sorted(grouped.items()):
+            commands = roles.get("SW", [])
+            if len(commands) != 1:
+                # Never choose between duplicate command roles.
+                if len(commands) > 1:
+                    self.blocked.update(commands)
+                    for address in commands:
+                        self.issues[address] = "ambiguous_duplicate_function_role"
+                continue
+            command = commands[0]
+            if command in self.blocked or self.dpts.get(command) != (1, 1):
+                continue
+            anchor = self._actuator_keys(command, feedback=False)
+            if len(anchor) != 1:
+                # A fan-out command may control several independent outputs;
+                # one output's feedback cannot prove the aggregate state.
+                continue
+            fields = {"address": command}
+            is_light = bool(re.search(r"燈|照明|\blight\b", names[key], re.IGNORECASE))
+            for role, addresses in sorted(roles.items()):
+                if role == "SW" or (not is_light and role != "SW-FB"):
+                    continue
+                field, expected = ABBREVIATED_ROLES[role]
+                if len(addresses) != 1:
+                    for address in addresses:
+                        self.blocked.add(address)
+                        self.issues[address] = "ambiguous_duplicate_function_role"
+                    continue
+                address = addresses[0]
+                if anchor != self._actuator_keys(
+                    address, feedback=role.endswith("-FB")
+                ):
+                    self.issues.setdefault(address, "unproven_same_actuator_channel")
+                    continue
+                # DPT Switch and Status share 0=off/1=on. Permit only this
+                # exact feedback disagreement after proving the same producer.
+                if (
+                    role == "SW-FB"
+                    and self.issues.get(address) == "conflicting_datapoint_type"
+                    and self.dpt_choices[address] == {(1, 1), (1, 11)}
+                ):
+                    self.dpts[address] = (1, 11)
+                    self.blocked.discard(address)
+                    self.issues.pop(address, None)
+                if address in self.blocked or self.dpts.get(address) not in expected:
+                    self.issues.setdefault(address, "role_datapoint_type_mismatch")
+                    continue
+                fields[field] = address
+            # Brightness / CT features are independent: a malformed optional
+            # feature must not erase a proven on/off channel. Orphan feedback
+            # remains eligible for an observation-only fallback.
+            for feature in ("brightness", "color_temperature"):
+                if f"{feature}_address" not in fields:
+                    fields.pop(f"{feature}_state_address", None)
+            if "color_temperature_address" in fields:
+                fields["color_temperature_mode"] = "absolute"
+            if len(fields) == 1:
+                # Retain the existing single-address fallback when pairing
+                # proves no additional feature. Never fabricate state feedback.
+                continue
+            self._add(
+                "light" if is_light else "switch",
+                names[key],
+                fields,
+                "exact-name-object-channel",
+            )
+
+    def scene_metadata(self) -> None:
+        """Use explicit sender parameters recovered from the same ETS archive."""
+        for address, ga in sorted(self.groups.items()):
+            if address in self.used:
+                continue
+            number = ga.get("scene_number")
+            sender_ids = ga.get("scene_sender_ids")
+            if (
+                ga.get("scene_number_source") != "ets-sender-parameter"
+                or type(number) is not int
+                or not 1 <= number <= 64
+                or not isinstance(sender_ids, list)
+                or not sender_ids
+                or any(not isinstance(item, str) or not item for item in sender_ids)
+            ):
+                continue
+            linked = {obj["_object_id"]: obj for obj in self.objects[address]}
+            if not all(
+                sender in linked
+                and _dict(linked[sender].get("flags")).get("communication") is True
+                and _dict(linked[sender].get("flags")).get("transmit") is True
+                for sender in sender_ids
+            ) or not self.has_flag(address, "write"):
+                continue
+            choices = self.dpt_choices[address]
+            if not choices or not choices <= {(17, 1), (18, 1)}:
+                continue
+            if address in self.blocked:
+                if self.issues.get(address) != "conflicting_datapoint_type":
+                    continue
+                # Both scene encodings share the lower six recall bits. This
+                # path only recalls an explicit 1..64 scene and never sets the
+                # learn/store bit; it does not generalize DPT compatibility.
+                self.blocked.discard(address)
+                self.issues.pop(address, None)
+            self._add(
+                "scene",
+                _label(ga.get("name"), f"KNX Scene {number}"),
+                {"address": address, "scene_number": number},
+                "ets-sender-scene-parameter",
+            )
 
     def _add(self, platform: str, name: str, config: dict, source: str) -> None:
         addresses = sorted({v for k, v in config.items() if k.endswith("address")})
@@ -460,24 +661,25 @@ class _Planner:
                 continue
             dpt = self.dpts[address]
             name = _label(ga.get("name"), f"KNX {address}")
+            named_feedback = bool(re.search(r"[\s_-]FB$", name, re.IGNORECASE))
+            telemetry = self.has_flag(address, "transmit") and (
+                not self.has_flag(address, "write") or named_feedback
+            )
             if dpt in {(17, 1), (18, 1)}:
                 self.issues[address] = "missing_explicit_scene_number"
-            elif dpt == (1, 1) and self.has_flag(address, "write"):
-                self._add("switch", name, {"address": address}, "ets-dpt-object-flags")
             elif dpt == (1, 11) or (
                 dpt in {(1, 1), (1, 2), (1, 5), (1, 9), (1, 18), (1, 19), (1, 22)}
-                and self.has_flag(address, "transmit")
-                and not self.has_flag(address, "write")
+                and telemetry
             ):
                 config = {"state_address": address}
                 if not self.has_flag(address, "read"):
                     config["sync_state"] = False
                 self._add("binary_sensor", name, config, "ets-dpt-telemetry")
-            elif dpt in MEASUREMENT_DPTS or (
-                dpt in TELEMETRY_DPTS
-                and self.has_flag(address, "transmit")
-                and not self.has_flag(address, "write")
+            elif (
+                dpt == (1, 1) and self.has_flag(address, "write") and not named_feedback
             ):
+                self._add("switch", name, {"address": address}, "ets-dpt-object-flags")
+            elif dpt in MEASUREMENT_DPTS or (dpt in TELEMETRY_DPTS and telemetry):
                 config = {"state_address": address, "type": f"{dpt[0]}.{dpt[1]:03d}"}
                 if self.objects[address] and not self.has_flag(address, "read"):
                     config["sync_state"] = False
@@ -566,6 +768,8 @@ def plan_project(project: dict) -> dict:
         raise ValueError("Parsed ETS project must be an object")
     planner = _Planner(project)
     planner.functions()
+    planner.abbreviated_groups()
+    planner.scene_metadata()
     planner.named_groups()
     planner.fallback()
     return planner.result()

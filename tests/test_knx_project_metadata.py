@@ -1,0 +1,212 @@
+"""Scene metadata enrichment is proven from archive parameters, not names."""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+import tempfile
+import unittest
+import warnings
+from pathlib import Path
+from unittest.mock import patch
+from zipfile import ZipFile
+
+SPEC = importlib.util.spec_from_file_location(
+    "knx_metadata_test",
+    Path(__file__).parents[1] / "custom_components/rexlite/knx_project_metadata.py",
+)
+metadata = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(metadata)
+
+APP = "M-02F0_A-0098-10-B2ED-O0085"
+MODULE = "MD-5_M-21_MI-1"
+OBJECT = f"{MODULE}_O-2-2_R-116"
+REFERENCE = f"{APP}_{MODULE}_UP-192_R-258"
+NAMESPACE = 'xmlns="http://knx.org/xml/project/20"'
+
+
+def project():
+    return {
+        "info": {"project_id": "P-0001"},
+        "devices": {"1.1.1": {"application": APP}},
+        "group_addresses": {
+            "1/0/1": {
+                "identifier": "GA-1",
+                "name": "Unrelated Scene 63 label",
+                "communication_object_ids": [f"1.1.1/{OBJECT}"],
+            }
+        },
+        "communication_objects": {
+            f"1.1.1/{OBJECT}": {
+                "device_address": "1.1.1",
+                "group_address_links": ["1/0/1"],
+                "flags": {"communication": True, "transmit": True},
+                "dpts": [{"main": 18, "sub": 1}],
+            }
+        },
+    }
+
+
+def device_xml(value="5", links="GA-1", extra=""):
+    parameter = (
+        f'<ParameterInstanceRef RefId="{REFERENCE}" Value="{value}" />'
+        if value is not None
+        else ""
+    )
+    return f'''<KNX {NAMESPACE}><Area Address="1"><Line Address="1">
+      <DeviceInstance Address="1"><ParameterInstanceRefs>{parameter}{extra}
+      </ParameterInstanceRefs><ComObjectInstanceRefs>
+      <ComObjectInstanceRef RefId="{OBJECT}" Links="{links}" />
+      </ComObjectInstanceRefs></DeviceInstance></Line></Area></KNX>'''
+
+
+def app_xml(meaning="Scene number [1..64]", maximum="64", ref_value=""):
+    return f'''<KNX {NAMESPACE}>
+      <Parameter Id="{APP}_MD-5_UP-192" Name="{meaning}"
+        ParameterType="{APP}_PT-Range" Value="1" />
+      <ParameterRef Id="{APP}_MD-5_UP-192_R-258"
+        RefId="{APP}_MD-5_UP-192" {ref_value} />
+      <ParameterType Id="{APP}_PT-Range"><TypeNumber Type="unsignedInt"
+        SizeInBit="8" minInclusive="1" maxInclusive="{maximum}" />
+      </ParameterType></KNX>'''
+
+
+class SceneMetadataTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "sample.knxproj"
+
+    def archive(self, device=None, application=None):
+        with ZipFile(self.path, "w") as archive:
+            archive.writestr("P-0001/0.xml", device or device_xml())
+            archive.writestr(f"{APP[:6]}/{APP}.xml", application or app_xml())
+
+    def annotated(self, parsed=None):
+        result = metadata.enrich_project(parsed or project(), self.path)
+        return result["group_addresses"]["1/0/1"]
+
+    def test_explicit_instance_number_ignores_name_and_preserves_input(self):
+        self.archive()
+        parsed = project()
+        before = copy.deepcopy(parsed)
+        result = self.annotated(parsed)
+        self.assertEqual(result["scene_number"], 5)
+        self.assertEqual(result["scene_number_source"], "ets-sender-parameter")
+        self.assertEqual(result["scene_sender_ids"], [f"1.1.1/{OBJECT}"])
+        self.assertEqual(parsed, before)
+        self.assertEqual(self.annotated(parsed), result)
+
+    def test_application_default_and_reference_override(self):
+        self.archive(device_xml(None))
+        self.assertEqual(self.annotated()["scene_number"], 1)
+        self.archive(device_xml(None), app_xml(ref_value='Value="7"'))
+        self.assertEqual(self.annotated()["scene_number"], 7)
+
+    def test_rejects_wrong_meaning_or_range(self):
+        for application in [app_xml("Scene page index"), app_xml(maximum="255")]:
+            with self.subTest(application=application):
+                self.archive(application=application)
+                self.assertNotIn("scene_number", self.annotated())
+
+    def test_rejects_out_of_range_or_invalid_values(self):
+        for value in ["0", "65", "-1", "1.0", "", "true"]:
+            with self.subTest(value=value):
+                self.archive(device_xml(value))
+                self.assertNotIn("scene_number", self.annotated())
+
+    def test_rejects_multiple_or_mismatched_raw_links(self):
+        for links in ["GA-1 GA-2", "GA-2", ""]:
+            self.archive(device_xml(links=links))
+            self.assertNotIn("scene_number", self.annotated())
+
+    def test_rejects_duplicate_parameter_ids(self):
+        extra = f'<ParameterInstanceRef RefId="{REFERENCE}" Value="6" />'
+        self.archive(device_xml(extra=extra))
+        self.assertNotIn("scene_number", self.annotated())
+
+    def test_unknown_revision_or_object_layout_does_not_guess(self):
+        self.archive()
+        parsed = project()
+        parsed["devices"]["1.1.1"]["application"] += "-UNKNOWN"
+        self.assertNotIn("scene_number", self.annotated(parsed))
+        parsed = project()
+        object_id = f"1.1.1/{OBJECT}"
+        replacement = object_id.replace("_R-116", "_R-117")
+        parsed["communication_objects"][replacement] = parsed[
+            "communication_objects"
+        ].pop(object_id)
+        parsed["group_addresses"]["1/0/1"]["communication_object_ids"] = [replacement]
+        self.assertNotIn("scene_number", self.annotated(parsed))
+
+    def test_non_scene_or_non_transmitting_object_is_not_proof(self):
+        self.archive()
+        for flags, dpts in [
+            ({"communication": True, "write": True}, [{"main": 18, "sub": 1}]),
+            ({"communication": True, "transmit": True}, [{"main": 5, "sub": 1}]),
+        ]:
+            parsed = project()
+            parsed["communication_objects"][f"1.1.1/{OBJECT}"].update(
+                flags=flags, dpts=dpts
+            )
+            self.assertNotIn("scene_number", self.annotated(parsed))
+
+    def test_unknown_second_transmitter_blocks_annotation(self):
+        self.archive()
+        parsed = project()
+        unknown = "1.1.2/O-1_R-1"
+        parsed["communication_objects"][unknown] = {
+            **copy.deepcopy(parsed["communication_objects"][f"1.1.1/{OBJECT}"]),
+            "device_address": "1.1.2",
+        }
+        parsed["group_addresses"]["1/0/1"]["communication_object_ids"].append(unknown)
+        self.assertNotIn("scene_number", self.annotated(parsed))
+
+    def test_disagreement_between_verified_senders_blocks_annotation(self):
+        second_object = OBJECT.replace("MI-1", "MI-2")
+        second_reference = REFERENCE.replace("MI-1", "MI-2")
+        extra = f'<ParameterInstanceRef RefId="{second_reference}" Value="6" />'
+        device = device_xml(extra=extra).replace(
+            "</ComObjectInstanceRefs>",
+            f'<ComObjectInstanceRef RefId="{second_object}" Links="GA-1" />'
+            "</ComObjectInstanceRefs>",
+        )
+        self.archive(device)
+        parsed = project()
+        parsed["communication_objects"][f"1.1.1/{second_object}"] = copy.deepcopy(
+            parsed["communication_objects"][f"1.1.1/{OBJECT}"]
+        )
+        parsed["group_addresses"]["1/0/1"]["communication_object_ids"].append(
+            f"1.1.1/{second_object}"
+        )
+        self.assertNotIn("scene_number", self.annotated(parsed))
+
+    def test_xml_entities_and_duplicate_zip_members_keep_baseline(self):
+        self.archive(device='<!DOCTYPE KNX [<!ENTITY e "5">]>' + device_xml("&e;"))
+        self.assertNotIn("scene_number", self.annotated())
+        self.archive()
+        with warnings.catch_warnings(), ZipFile(self.path, "a") as archive:
+            warnings.simplefilter("ignore", UserWarning)
+            archive.writestr("P-0001/0.xml", device_xml())
+        self.assertNotIn("scene_number", self.annotated())
+
+    def test_missing_or_protected_project_retains_baseline(self):
+        self.assertNotIn("scene_number", self.annotated())
+        with ZipFile(self.path, "w") as archive:
+            archive.writestr("P-0001.zip", "opaque encrypted project")
+        self.assertNotIn("scene_number", self.annotated())
+
+    def test_bounded_archive_and_xml_sizes(self):
+        self.archive()
+        for limit in [
+            "MAX_ARCHIVE_BYTES",
+            "MAX_XML_BYTES",
+            "MAX_TOTAL_XML_BYTES",
+            "MAX_MEMBERS",
+        ]:
+            with self.subTest(limit=limit), patch.object(metadata, limit, 1):
+                self.assertNotIn("scene_number", self.annotated())
+
+
+if __name__ == "__main__":
+    unittest.main()

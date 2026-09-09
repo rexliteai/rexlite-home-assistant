@@ -22,7 +22,7 @@ from typing import Any
 
 import yaml
 
-from .knx_project_mapper import _address, plan_project
+from .knx_project_mapper import MAPPER_REVISION, _address, plan_project
 
 DATA_KEY = "rexlite_knx_project_deployer"
 PACKAGE_KEY = "rexlite_knx_auto"
@@ -613,6 +613,74 @@ def append_manual_plan(base: dict, addition: dict) -> dict:
     return result
 
 
+def preserve_manual_plan(
+    plan: dict, manual: dict, address_format: str | None = None
+) -> dict:
+    """Keep previously approved manual mappings authoritative on mapper upgrades."""
+    auto_rows = indexed_rows(plan["config"], address_format)
+    manual_rows = indexed_rows(manual["config"], address_format)
+    rejected = set()
+    for entity in plan["entities"]:
+        identity = entity["platform"], entity["uniqueId"]
+        for approved in manual["entities"]:
+            approved_identity = approved["platform"], approved["uniqueId"]
+            overlap = set(entity["addresses"]) & set(approved["addresses"])
+            if identity == approved_identity:
+                rejected.add(identity)
+                break
+            if not overlap:
+                continue
+            if entity["platform"] == approved["platform"] == "scene":
+                number = auto_rows[identity].get("scene_number")
+                approved_number = manual_rows[approved_identity].get("scene_number")
+                if (
+                    type(number) is int
+                    and type(approved_number) is int
+                    and 1 <= number <= 64
+                    and 1 <= approved_number <= 64
+                    and number != approved_number
+                ):
+                    continue
+            rejected.add(identity)
+            break
+    retained = deepcopy(plan)
+    retained["entities"] = [
+        entity
+        for entity in retained["entities"]
+        if (entity["platform"], entity["uniqueId"]) not in rejected
+    ]
+    retained["config"] = {
+        platform: [
+            row
+            for row in rows
+            if (platform, row_identity(platform, row, address_format)) not in rejected
+        ]
+        for platform, rows in retained["config"].items()
+    }
+    retained["config"] = {key: rows for key, rows in retained["config"].items() if rows}
+    skipped_addresses = {item.get("address") for item in retained["skipped"]}
+    for entity in plan["entities"]:
+        if (entity["platform"], entity["uniqueId"]) in rejected:
+            for address in entity["addresses"]:
+                if address not in skipped_addresses:
+                    retained["skipped"].append(
+                        {
+                            "address": address,
+                            "reason": "existing_manual_or_ui_entity_preserved",
+                        }
+                    )
+                    skipped_addresses.add(address)
+    result = append_manual_plan(retained, manual)
+    mapped = {
+        address for entity in result["entities"] for address in entity["addresses"]
+    }
+    result["skipped"] = [
+        item for item in result["skipped"] if item.get("address") not in mapped
+    ]
+    result["mappedAddressCount"] = len(mapped)
+    return result
+
+
 class ProjectDeployer:
     """Serialize writes, durably journal them, reload and verify actual entities."""
 
@@ -642,6 +710,8 @@ class ProjectDeployer:
         from homeassistant.components.file_upload import process_uploaded_file
         from xknxproject import XKNXProj
 
+        from .knx_project_metadata import enrich_project
+
         def file_fingerprint(path: Path) -> str:
             checksum = hashlib.sha256()
             with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
@@ -668,6 +738,7 @@ class ProjectDeployer:
             project = XKNXProj(
                 path, password=password, language=hass.config.language
             ).parse()
+            project = enrich_project(project, path, password=password)
             if file_fingerprint(path) != fingerprint:
                 raise DeploymentError("project_file_changed_during_parse")
             return project
@@ -861,11 +932,136 @@ class ProjectDeployer:
                     and not entry.disabled_by
                 )
                 and (state := self.hass.states.get(entity_id)) is not None
+                and not getattr(state, "attributes", {}).get("restored")
             ):
                 loaded += 1
                 if state.state not in ("unknown", "unavailable"):
                     available += 1
         return {"loadedCount": loaded, "availableCount": available}
+
+    def _registry_entry(self, record: dict) -> Any:
+        """Resolve only the exact registry identity recorded by this writer."""
+        from homeassistant.helpers import entity_registry as er
+
+        entry = er.async_get(self.hass).async_get(record["entityId"])
+        if (
+            entry is not None
+            and entry.domain == record["platform"]
+            and entry.platform == "knx"
+            and entry.unique_id == record["uniqueId"]
+            and entry.config_entry_id == record["configEntryId"]
+        ):
+            return entry
+        return None
+
+    def _registry_change(self, record: dict, *, reverse: bool = False) -> bool:
+        """Compare-and-swap only our disabler, preserving user registry choices."""
+        from homeassistant.helpers import entity_registry as er
+
+        if (entry := self._registry_entry(record)) is None:
+            return False
+        before, after = record["beforeDisabled"], record["afterDisabled"]
+        if reverse:
+            before, after = after, before
+        if entry.disabled_by not in (before, after):
+            return False
+        if not reverse and after == "integration" and before is None:
+            state = self.hass.states.get(record["entityId"])
+            module = self._module()
+            if (
+                (
+                    state is not None
+                    and not getattr(state, "attributes", {}).get("restored")
+                )
+                or (
+                    (record["platform"], record["uniqueId"])
+                    in indexed_rows(module.config_yaml, self._identity_format())
+                )
+                or set(record["addresses"]).intersection(self._ui_addresses(module))
+            ):
+                return False
+        if entry.disabled_by != after:
+            er.async_get(self.hass).async_update_entity(
+                record["entityId"],
+                disabled_by=er.RegistryEntryDisabler(after)
+                if after is not None
+                else None,
+            )
+        if after is not None:
+            # Unloaded YAML entities have no live listener for disable events.
+            # HA's global restore listener only cleans up removal/rename events.
+            state = self.hass.states.get(record["entityId"])
+            if state and getattr(state, "attributes", {}).get("restored"):
+                self.hass.states.async_remove(record["entityId"])
+        return True
+
+    def _registry_restorations(self, previous: dict | None, plan: dict) -> list[dict]:
+        """Re-enable only identities previously retired by this writer."""
+        wanted = {(item["platform"], item["uniqueId"]) for item in plan["entities"]}
+        return [
+            {**item, "beforeDisabled": "integration", "afterDisabled": None}
+            for item in (previous or {}).get("retiredEntities", [])
+            if (item["platform"], item["uniqueId"]) in wanted
+            and (entry := self._registry_entry(item)) is not None
+            and entry.disabled_by == "integration"
+        ]
+
+    def _registry_retirements(
+        self, previous: dict | None, manifest: dict
+    ) -> list[dict]:
+        """Retire replaced auto entities only after their replacements are loaded."""
+        from homeassistant.helpers import entity_registry as er
+
+        if not previous or previous.get("configEntryId") != manifest["configEntryId"]:
+            return []
+        address_format = self._identity_format()
+        module = self._module()
+        active = indexed_rows(module.config_yaml, address_format)
+        ui_addresses = self._ui_addresses(module)
+        manual = {
+            (item["platform"], item["uniqueId"])
+            for item in previous.get("manualPlan", {}).get("entities", [])
+        }
+        registry = er.async_get(self.hass)
+        result = []
+        for item in previous.get("entities", []):
+            uid = manifest_identity(item, previous, address_format)
+            identity = item["platform"], uid
+            addresses = set(item.get("addresses", []))
+            replacements = [
+                {"platform": new["platform"], "uniqueId": new["uniqueId"]}
+                for new in manifest["entities"]
+                if addresses.intersection(new.get("addresses", []))
+            ]
+            if (
+                identity in active
+                or identity in manual
+                or not replacements
+                or addresses.intersection(ui_addresses)
+            ):
+                continue
+            entity_id = registry.async_get_entity_id(item["platform"], "knx", uid)
+            if entity_id is None:
+                continue
+            record = {
+                "entityId": entity_id,
+                "platform": item["platform"],
+                "uniqueId": uid,
+                "configEntryId": manifest["configEntryId"],
+                "addresses": sorted(addresses),
+                "replacements": replacements,
+                "beforeDisabled": None,
+                "afterDisabled": "integration",
+            }
+            if (entry := self._registry_entry(record)) is None or entry.disabled_by:
+                continue
+            state = self.hass.states.get(entity_id)
+            if state is not None and not getattr(state, "attributes", {}).get(
+                "restored"
+            ):
+                continue
+            result.append(record)
+        return result
 
     async def _read_previous(self) -> dict | None:
         previous = await self._io(self.files.read_json, MANIFEST)
@@ -1019,6 +1215,8 @@ class ProjectDeployer:
             )
 
         await self._io(restore)
+        for record in reversed(journal.get("registryChanges", [])):
+            self._registry_change(record, reverse=True)
         async with asyncio.timeout(60):
             if not await self.hass.config_entries.async_reload(
                 journal["configEntryId"]
@@ -1089,6 +1287,7 @@ class ProjectDeployer:
                     manual_yaml is None
                     and previous
                     and previous.get("projectFingerprint") == fingerprint
+                    and previous.get("mapperRevision") == MAPPER_REVISION
                     and (previous.get("parsedProjectDigest") == parsed_hash)
                     and previous.get("status") in ("completed", "partial")
                 ):
@@ -1211,7 +1410,9 @@ class ProjectDeployer:
                 elif previous and previous.get("manualPlan"):
                     if previous.get("projectFingerprint") != fingerprint:
                         raise DeploymentError("manual_yaml_project_changed")
-                    plan = append_manual_plan(plan, previous["manualPlan"])
+                    plan = preserve_manual_plan(
+                        plan, previous["manualPlan"], address_format
+                    )
                     plan["manualPlan"] = previous["manualPlan"]
                 expected_count = plan["entityCount"]
                 plan, combined = filter_existing(
@@ -1225,6 +1426,9 @@ class ProjectDeployer:
                     plan,
                     parsedProjectDigest=parsed_hash,
                     configEntryId=module.entry.entry_id,
+                    mapperRevision=(previous or {}).get("mapperRevision", 0)
+                    if manual_yaml is not None
+                    else MAPPER_REVISION,
                 )
                 if not plan["entityCount"]:
                     manifest.update(
@@ -1271,6 +1475,7 @@ class ProjectDeployer:
                     "configEntryId": module.entry.entry_id,
                     "previous": previous,
                     "files": {},
+                    "registryChanges": self._registry_restorations(previous, plan),
                 }
                 for relative, after in changes.items():
                     before = originals[relative]
@@ -1302,6 +1507,8 @@ class ProjectDeployer:
                     raise DeploymentError(
                         "generated_package_not_loaded_by_configuration"
                     )
+                for record in journal["registryChanges"]:
+                    self._registry_change(record)
                 manifest.update(stage="reloading")
                 self.current = self._public(manifest)
                 async with asyncio.timeout(60):
@@ -1324,6 +1531,23 @@ class ProjectDeployer:
                     or project_digest(current_project) != parsed_hash
                 ):
                     raise DeploymentError("loaded_project_changed_during_deployment")
+                retirements = self._registry_retirements(previous, manifest)
+                if retirements:
+                    journal["registryChanges"].extend(retirements)
+                    # Registry changes join the same durable recovery transaction.
+                    await self._io(self.files.write_json, JOURNAL, journal)
+                restored = {
+                    (item["platform"], item["uniqueId"])
+                    for item in manifest["entities"]
+                }
+                manifest["retiredEntities"] = [
+                    item
+                    for item in (previous or {}).get("retiredEntities", [])
+                    if (item["platform"], item["uniqueId"]) not in restored
+                ]
+                manifest["retiredEntities"].extend(
+                    record for record in retirements if self._registry_change(record)
+                )
                 manifest.update(
                     counts,
                     status="partial" if plan["skipped"] else "completed",
