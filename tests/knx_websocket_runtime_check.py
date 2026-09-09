@@ -6,7 +6,6 @@ Unlike a mock connection, ActiveConnection has no require_admin() method.
 
 import asyncio
 import importlib.util
-import inspect
 import json
 import logging
 import sys
@@ -73,7 +72,7 @@ async def main() -> None:
         # Core 2026.5 added the remote argument to the connection constructor.
         connection_options = (
             {"remote": None}
-            if "remote" in inspect.signature(ActiveConnection).parameters
+            if "remote" in ActiveConnection.__init__.__code__.co_varnames
             else {}
         )
         connection = ActiveConnection(
