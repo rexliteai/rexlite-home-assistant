@@ -1,0 +1,71 @@
+name: KNX Home Assistant Compatibility
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: knx-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: Home Assistant ${{ matrix.ha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {ha: "2026.1.0", python: "3.13"}
+          - {ha: "2026.2.0", python: "3.13"}
+          - {ha: "2026.3.0", python: "3.14"}
+          - {ha: "2026.4.0", python: "3.14"}
+          - {ha: "2026.5.0", python: "3.14"}
+          - {ha: "2026.6.0", python: "3.14"}
+          - {ha: "2026.7.0", python: "3.14"}
+          - {ha: "2026.8.0", python: "3.14"}
+          - {ha: "2026.9.1", python: "3.14"}
+    env:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the official Home Assistant release
+        env:
+          HA_VERSION: ${{ matrix.ha }}
+        run: python -m pip install --disable-pip-version-check "homeassistant==$HA_VERSION"
+      - name: Install this release's declared KNX and frontend requirements
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import sys
+          import homeassistant
+          root = pathlib.Path(homeassistant.__file__).parent
+          requirements = [
+              requirement
+              for domain in ("knx", "frontend")
+              for requirement in json.loads(
+                  (root / "components" / domain / "manifest.json").read_text()
+              ).get("requirements", [])
+          ]
+          subprocess.run(
+              [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *requirements],
+              check=True,
+          )
+          PY
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -q
+      - name: Validate real schemas, package loading, native IDs, ETS import and writer transaction
+        run: python tests/knx_compatibility_runtime_check.py

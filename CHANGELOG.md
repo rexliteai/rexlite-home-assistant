@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.7
+
+- Add administrator-only capability, verified ETS import, YAML deployment, and
+  deployment-status WebSocket commands for one-upload KNX provisioning.
+- Validate file fingerprints and actual KNX schemas, preserve manual YAML/UI
+  entities, and transactionally activate a managed package with rollback.
+- Verify effective configuration and registered entity states after reload;
+  expose skipped mappings and unavailable state counts separately.
+- Support automatic KNX deployment on every stable Core release from 2026.1.0:
+  legacy address-format identities on 2026.1-7, stable native identities on
+  2026.8, and custom identities for new deployments on 2026.9+.
+- Preserve canonical identity metadata across Core upgrades and honor official
+  registry migrations. Reject conflicting/duplicate identities and unsafe legacy
+  address-format changes before changing YAML. Preserve nested manual RGB GAs.
+- Support pre-May tuple KNX entity identifiers and avoid normalizing existing
+  KNX schemas twice when preserving manual lights or climate entities.
+- Report Core/schema incompatibility in capability preflight; the integration's
+  minimum stays Core 2026.1.0.
+- Restart Home Assistant after installing this release to register the new
+  commands. Entry reload alone does not load newly installed integration code.
+
 ## 0.1.6
 
 - Classify rejected service credentials separately from temporary network

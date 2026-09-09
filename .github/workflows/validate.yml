@@ -39,7 +39,9 @@ jobs:
           cache: pip
 
       - name: Install validation tools
-        run: python -m pip install --disable-pip-version-check ruff
+        run: >-
+          python -m pip install --disable-pip-version-check
+          ruff PyYAML==6.0.3 voluptuous==0.16.0
 
       - name: Run local verification
         env:

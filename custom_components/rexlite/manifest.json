@@ -1,7 +1,9 @@
 {
   "domain": "rexlite",
   "name": "REXLiTE AI",
-  "codeowners": ["@rexliteai"],
+  "codeowners": [
+    "@rexliteai"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/rexliteai/rexlite-home-assistant",
   "integration_type": "service",
@@ -9,5 +11,11 @@
   "issue_tracker": "https://github.com/rexliteai/rexlite-home-assistant/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.6"
+  "version": "0.1.7",
+  "dependencies": [
+    "websocket_api"
+  ],
+  "after_dependencies": [
+    "knx"
+  ]
 }

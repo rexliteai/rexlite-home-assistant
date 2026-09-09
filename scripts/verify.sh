@@ -33,6 +33,11 @@ fi
 
 cd "${ROOT_DIR}"
 
+if ! "${PYTHON_BIN}" -c 'import yaml, voluptuous' >/dev/null 2>&1; then
+  echo "Validation dependencies missing; install: ${PYTHON_BIN} -m pip install PyYAML==6.0.3 voluptuous==0.16.0 ruff" >&2
+  exit 1
+fi
+
 PYTHONPYCACHEPREFIX="${CACHE_DIR}" "${PYTHON_BIN}" -m compileall -q -f custom_components tests
 PYTHONPYCACHEPREFIX="${CACHE_DIR}" "${PYTHON_BIN}" -m unittest discover -s tests -p 'test_*.py'
 

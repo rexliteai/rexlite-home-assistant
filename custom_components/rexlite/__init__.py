@@ -30,6 +30,21 @@ from .runtime import TunnelConfig
 type REXLiTEConfigEntry = ConfigEntry[REXLiTECoordinator]
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Register local administrative deployment commands once per HA instance."""
+    from homeassistant.helpers.start import async_at_started
+
+    from .knx_project_deployment import register_websocket_commands
+
+    deployer = register_websocket_commands(hass)
+
+    async def recover_interrupted_deployment(_hass: HomeAssistant) -> None:
+        await deployer.recover()
+
+    async_at_started(hass, recover_interrupted_deployment)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: REXLiTEConfigEntry) -> bool:
     """Set up REXLiTE from a config entry."""
 
