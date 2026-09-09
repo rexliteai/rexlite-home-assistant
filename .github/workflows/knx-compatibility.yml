@@ -67,5 +67,7 @@ jobs:
           PY
       - name: Run regression tests
         run: python -m unittest discover -s tests -q
+      - name: Verify cloud reconnect, heartbeat recovery and session cleanup
+        run: python tests/cloud_connection_runtime_check.py
       - name: Validate real schemas, package loading, native IDs, ETS import and writer transaction
         run: python tests/knx_compatibility_runtime_check.py

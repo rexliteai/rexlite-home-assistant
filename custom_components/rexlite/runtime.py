@@ -181,20 +181,21 @@ class REXLiTETunnelClient:
         """Stop all background work and close active streams."""
 
         self._stopping = True
-        if self._ws is not None and not self._ws.closed:
-            await self._ws.close(code=aiohttp.WSCloseCode.GOING_AWAY)
-
         tasks = [task for task in self._handler_tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
         if self._heartbeat_task is not None and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
             tasks.append(self._heartbeat_task)
-        await self._close_all_streams()
-
         if self._main_task is not None and not self._main_task.done():
             self._main_task.cancel()
             tasks.append(self._main_task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        if self._ws is not None and not self._ws.closed:
+            await self._ws.close(code=aiohttp.WSCloseCode.GOING_AWAY)
+        await self._close_all_streams()
 
         self._handler_tasks.clear()
         self._main_task = None
@@ -260,7 +261,7 @@ class REXLiTETunnelClient:
             url,
             headers=headers,
             heartbeat=30,
-            receive_timeout=90,
+            timeout=aiohttp.ClientWSTimeout(ws_receive=90, ws_close=5),
             max_msg_size=self._config.max_message_bytes,
             autoclose=True,
             autoping=True,
@@ -276,34 +277,39 @@ class REXLiTETunnelClient:
                 authentication_failed=False,
             )
             self._auth_failure_reported = False
-            await self._send_hello()
-            self._heartbeat_task = self._task_factory(
-                self._heartbeat_loop(),
-                f"REXLiTE heartbeat {self._config.agent_id}",
-            )
+            receiver = None
             try:
-                async for message in ws:
-                    if message.type in (
-                        aiohttp.WSMsgType.TEXT,
-                        aiohttp.WSMsgType.BINARY,
-                    ):
-                        await self._handle_message(message.data)
-                    elif message.type == aiohttp.WSMsgType.ERROR:
-                        raise ws.exception() or ConnectionError(
-                            "gateway WebSocket error"
-                        )
-                    elif message.type in (
-                        aiohttp.WSMsgType.CLOSE,
-                        aiohttp.WSMsgType.CLOSED,
-                        aiohttp.WSMsgType.CLOSING,
-                    ):
-                        break
+                await self._send_hello()
+                self._heartbeat_task = self._task_factory(
+                    self._heartbeat_loop(),
+                    f"REXLiTE heartbeat {self._config.agent_id}",
+                )
+                receiver = self._task_factory(
+                    self._receive_messages(ws), "REXLiTE gateway receiver"
+                )
+                done, _ = await asyncio.wait(
+                    (receiver, self._heartbeat_task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    task.result()
+                if self._heartbeat_task in done:
+                    raise ConnectionError("gateway heartbeat stopped")
             finally:
-                if self._heartbeat_task is not None:
-                    self._heartbeat_task.cancel()
-                    await asyncio.gather(self._heartbeat_task, return_exceptions=True)
-                    self._heartbeat_task = None
+                # End every task belonging to this session before reconnecting.
+                # In particular, an old HTTP request must never reply on a new WS.
                 self._ws = None
+                tasks = [
+                    task
+                    for task in (receiver, self._heartbeat_task, *self._handler_tasks)
+                    if task is not None
+                ]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                self._heartbeat_task = None
+                self._handler_tasks.clear()
                 if self._connected_since is not None:
                     self._last_connection_duration = (
                         asyncio.get_running_loop().time() - self._connected_since
@@ -311,6 +317,21 @@ class REXLiTETunnelClient:
                 self._connected_since = None
                 self._set_state(connected=False)
                 await self._close_all_streams()
+
+    async def _receive_messages(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Receive gateway traffic while the supervisor watches the heartbeat."""
+
+        async for message in ws:
+            if message.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                await self._handle_message(message.data)
+            elif message.type == aiohttp.WSMsgType.ERROR:
+                raise ws.exception() or ConnectionError("gateway WebSocket error")
+            elif message.type in (
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.CLOSING,
+            ):
+                return
 
     async def _heartbeat_loop(self) -> None:
         while True:
@@ -596,8 +617,10 @@ class REXLiTETunnelClient:
                 envelope.payload.get("data"), maximum=self._config.max_message_bytes
             )
             stream.writer.write(data)
-            await stream.writer.drain()
-        except (ProtocolError, ConnectionError, OSError) as err:
+            await asyncio.wait_for(
+                stream.writer.drain(), timeout=self._config.request_timeout
+            )
+        except (ProtocolError, ConnectionError, OSError, TimeoutError) as err:
             await self._close_stream(envelope.request_id)
             await self._send(
                 TYPE_STREAM_CLOSE,
@@ -832,8 +855,9 @@ class REXLiTETunnelClient:
         if ws is None or ws.closed:
             raise ConnectionError("gateway is not connected")
         data = make_envelope(message_type, request_id, payload)
-        async with self._send_lock:
-            await ws.send_str(data)
+        async with asyncio.timeout(self._config.request_timeout):
+            async with self._send_lock:
+                await ws.send_str(data)
 
     async def _close_stream(
         self, request_id: str, *, cancel_reader: bool = True
@@ -850,14 +874,25 @@ class REXLiTETunnelClient:
         ):
             stream.reader_task.cancel()
         stream.writer.close()
-        with suppress(ConnectionError, OSError):
-            await stream.writer.wait_closed()
+        with suppress(ConnectionError, OSError, TimeoutError):
+            await asyncio.wait_for(
+                stream.writer.wait_closed(),
+                timeout=min(5.0, self._config.request_timeout),
+            )
 
     async def _close_all_streams(self) -> None:
+        readers = [
+            stream.reader_task
+            for stream in self._streams.values()
+            if stream.reader_task is not None
+            and stream.reader_task is not asyncio.current_task()
+        ]
         await asyncio.gather(
             *(self._close_stream(request_id) for request_id in list(self._streams)),
             return_exceptions=True,
         )
+        if readers:
+            await asyncio.gather(*readers, return_exceptions=True)
 
     def _set_state(self, **changes: Any) -> None:
         next_state = replace(self._state, **changes)

@@ -2,6 +2,10 @@
 
 ## 0.1.7
 
+- Reconnect when the heartbeat worker fails; cancel and await pending requests
+  before reconnecting or stopping so old requests cannot cross cloud sessions.
+- Bound cloud writes, local stream backpressure, and stream shutdown; cover
+  recovery and cleanup with real WebSocket fault-injection tests.
 - Add administrator-only capability, verified ETS import, YAML deployment, and
   deployment-status WebSocket commands for one-upload KNX provisioning.
 - Validate file fingerprints and actual KNX schemas, preserve manual YAML/UI
