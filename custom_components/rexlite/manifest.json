@@ -13,6 +13,7 @@
   "single_config_entry": true,
   "version": "0.1.7",
   "dependencies": [
+    "file_upload",
     "websocket_api"
   ],
   "after_dependencies": [
