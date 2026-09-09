@@ -8,7 +8,7 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 PACKAGE_PATH = Path(__file__).parents[1] / "custom_components" / "rexlite"
 PACKAGE_NAME = "rexlite_setup_test"
@@ -61,6 +61,11 @@ homeassistant_exceptions = types.ModuleType("homeassistant.exceptions")
 homeassistant_exceptions.ConfigEntryAuthFailed = _ConfigEntryAuthFailed
 homeassistant_exceptions.ConfigEntryNotReady = _ConfigEntryNotReady
 homeassistant_helpers = types.ModuleType("homeassistant.helpers")
+homeassistant_config_validation = types.ModuleType(
+    "homeassistant.helpers.config_validation"
+)
+homeassistant_config_validation.config_entry_only_config_schema = Mock()
+homeassistant_helpers.config_validation = homeassistant_config_validation
 homeassistant_aiohttp = types.ModuleType("homeassistant.helpers.aiohttp_client")
 homeassistant_aiohttp.async_get_clientsession = lambda hass: object()
 homeassistant_update_coordinator = types.ModuleType(

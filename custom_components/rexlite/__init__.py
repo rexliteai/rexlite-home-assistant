@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as home_assistant_version
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .authentication import (
@@ -22,12 +23,15 @@ from .const import (
     DEFAULT_GATEWAY_WS_URL,
     DEFAULT_HOME_ASSISTANT_URL,
     DEFAULT_REMOTE_ADMIN_ENABLED,
+    DOMAIN,
     PLATFORMS,
 )
 from .coordinator import REXLiTECoordinator
 from .runtime import TunnelConfig
 
 type REXLiTEConfigEntry = ConfigEntry[REXLiTECoordinator]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
