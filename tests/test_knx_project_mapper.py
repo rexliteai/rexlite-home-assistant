@@ -349,6 +349,32 @@ class KNXProjectMappingTests(unittest.TestCase):
             "missing_explicit_scene_number",
         )
 
+    def test_shade_close_step_pos_labels_map_one_cover(self):
+        result = mapper.plan_project(
+            project(
+                ga("2/1/0", "Example-MatterShade-Blind-Close", 1, 8),
+                ga("2/1/1", "Example-MatterShade-Blind-Step", 1, 7),
+                ga("2/1/2", "Example-MatterShade-Blind-POS", 5, 1),
+            )
+        )
+        self.assertEqual(result["entityCount"], 1)
+        self.assertEqual(result["skipped"], [])
+        cover = result["config"]["cover"][0]
+        self.assertEqual(cover["move_long_address"], "2/1/0")
+        self.assertEqual(cover["move_short_address"], "2/1/1")
+        self.assertEqual(cover["position_address"], "2/1/2")
+
+    def test_shade_close_label_with_wrong_datapoint_type_is_not_a_cover(self):
+        # An impulse-relay "Close" (DPT 1.001) is not the bi-directional up/down
+        # datapoint; the role guard rejects it instead of inventing a cover.
+        result = mapper.plan_project(
+            project(
+                ga("2/1/0", "Relay-Blind-Close", 1, 1),
+                ga("2/1/1", "Relay-Blind-Open", 1, 1),
+            )
+        )
+        self.assertNotIn("cover", result["config"])
+
     def test_no_dpt_one_switch_or_scene_number_guessed_from_address(self):
         result = mapper.plan_project(
             project(ga("1/0/1", "Unknown", 1, 1), ga("4/0/13", "Scene 13", 18, 1))
