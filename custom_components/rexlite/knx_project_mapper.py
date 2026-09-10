@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 2
+MAPPER_REVISION = 3
 
 # role: (YAML field, allowed exact DPTs). Names here are semantic roles, not GA
 # names. Standard ETS roles include AbsoluteSetvalueControl/ActualDimmingValue.
@@ -55,6 +55,12 @@ ROLE_FIELDS = {
 # Longest suffix wins. A separator and a non-empty exact prefix are required.
 # This supports existing installer naming without combining vaguely similar
 # labels or inferring a feedback address by incrementing a group address.
+# The shade roles "close"/"step"/"pos" are single-address labels for the
+# bi-directional up/down (DPT 1.008), step/stop (DPT 1.007) and absolute
+# position (DPT 5.001) group addresses; the exact-DPT guard below still rejects
+# a label that does not carry the datapoint type its role requires. "open" is
+# deliberately absent: paired with "close" it only produces an ambiguous
+# duplicate up/down role.
 NAME_ROLES = {
     "亮度狀態": "actualdimmingvalue",
     "brightness status": "actualdimmingvalue",
@@ -67,14 +73,17 @@ NAME_ROLES = {
     "status": "infoonoff",
     "上下": "moveupdown",
     "up/down": "moveupdown",
+    "close": "moveupdown",
     "停止/微調": "stopstepupdown",
     "stop/step": "stopstepupdown",
+    "step": "stopstepupdown",
     "停止": "stop",
     "stop": "stop",
     "位置狀態": "positionstate",
     "position status": "positionstate",
     "位置": "position",
     "position": "position",
+    "pos": "position",
     "目標溫度狀態": "targettemperaturestate",
     "設定溫度狀態": "targettemperaturestate",
     "target temperature status": "targettemperaturestate",

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.11
+
+- Map the shade group-address labels `Close` (DPT 1.008 up/down), `Step`
+  (DPT 1.007 step/stop) and `POS` (DPT 5.001 absolute position) to a single
+  `cover`, alongside the existing `Up/Down` / `Stop/Step` / `Position`
+  convention. The exact-datapoint-type guard still rejects a label that does
+  not carry its role's datapoint type, so an impulse-relay `Close`/`Open`
+  pair (DPT 1.001) is not turned into a cover.
+- Bump the mapping revision so reimporting an already-imported project after
+  upgrading and restarting Home Assistant applies the new cover mapping.
+
 ## 0.1.10
 
 - Pair exact SW/SW-FB, VAL/VAL-FB and CT/CT-FB addresses using matching
