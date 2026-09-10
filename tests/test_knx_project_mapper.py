@@ -68,9 +68,9 @@ def sample_conventions():
     )
 
 
-def abbreviated_light():
+def abbreviated_light(base="Example-Dali-Light", roles=None):
     """Independent, synthetic model of a six-role actuator plus a display."""
-    roles = [
+    roles = roles or [
         ("SW", 1, 1),
         ("SW-FB", 1, 11),
         ("VAL", 5, 1),
@@ -81,7 +81,7 @@ def abbreviated_light():
     groups, objects = [], {}
     for number, (role, main, sub) in enumerate(roles, start=1):
         address = f"8/0/{number}"
-        groups.append(ga(address, f"Example-Dali-Light-{role}", main, sub))
+        groups.append(ga(address, f"{base}-{role}", main, sub))
         objects[f"2.1.5/MD-1_M-1_MI-1_O-{number}_R-{number}"] = {
             "device_address": "2.1.5",
             "channel": "CH-3",
@@ -191,6 +191,68 @@ class KNXProjectMappingTests(unittest.TestCase):
                     {"address": "8/0/3", "reason": "conflicting_datapoint_type"},
                     result["skipped"],
                 )
+
+    def test_brightness_color_spelling_maps_the_same_as_val_ct(self):
+        p = abbreviated_light(
+            base="2F-01G",
+            roles=[
+                ("SW", 1, 1),
+                ("SW-FB", 1, 11),
+                ("Brightness", 5, 1),
+                ("Brightness-FB", 5, 1),
+                ("Color", 7, 600),
+                ("Color-FB", 7, 600),
+            ],
+        )
+        light = mapper.plan_project(p)["config"]["light"][0]
+        self.assertEqual(light["brightness_address"], "8/0/3")
+        self.assertEqual(light["brightness_state_address"], "8/0/4")
+        self.assertEqual(light["color_temperature_address"], "8/0/5")
+
+    def test_terse_name_with_a_proven_brightness_channel_is_a_light(self):
+        p = abbreviated_light(
+            base="Loop-A CC-1CT",
+            roles=[("SW", 1, 1), ("SW-FB", 1, 11), ("Value", 5, 1), ("Value-FB", 5, 1)],
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("switch", result["config"])
+        light = result["config"]["light"][0]
+        self.assertEqual(light["brightness_address"], "8/0/3")
+
+    def test_value_carrying_a_temperature_datapoint_never_becomes_brightness(self):
+        p = abbreviated_light(
+            base="AC-01",
+            roles=[("SW", 1, 1), ("SW-FB", 1, 11), ("Value", 9, 1), ("Value-FB", 9, 1)],
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("light", result["config"])
+        switch = result["config"]["switch"][0]
+        self.assertEqual(switch["address"], "8/0/1")
+        self.assertNotIn("brightness_address", switch)
+
+    def test_relative_color_temperature_maps_with_relative_mode(self):
+        p = abbreviated_light()
+        for address in ("8/0/5", "8/0/6"):
+            p["group_addresses"][address]["dpt"] = {"main": 5, "sub": 1}
+            p["communication_objects"][
+                f"2.1.5/MD-1_M-1_MI-1_O-{address[-1]}_R-{address[-1]}"
+            ]["dpts"] = [{"main": 5, "sub": 1}]
+        light = mapper.plan_project(p)["config"]["light"][0]
+        self.assertEqual(light["color_temperature_address"], "8/0/5")
+        self.assertEqual(light["color_temperature_state_address"], "8/0/6")
+        self.assertEqual(light["color_temperature_mode"], "relative")
+
+    def test_switch_feedback_tolerates_a_bool_listener_on_the_same_channel(self):
+        p = abbreviated_light()
+        # The State object stays; a logic-block Bool listener also subscribes.
+        p["communication_objects"]["logic"] = {
+            "device_address": "2.1.9",
+            "group_address_links": ["8/0/2"],
+            "dpts": [{"main": 1, "sub": 2}],
+            "flags": {"communication": True, "write": True, "transmit": True},
+        }
+        light = mapper.plan_project(p)["config"]["light"][0]
+        self.assertEqual(light["state_address"], "8/0/2")
 
     def test_incompatible_color_temperature_preserves_brightness_channel(self):
         p = abbreviated_light()
@@ -374,6 +436,30 @@ class KNXProjectMappingTests(unittest.TestCase):
             )
         )
         self.assertNotIn("cover", result["config"])
+
+    def test_fb_named_binary_address_without_objects_is_a_read_only_sensor(self):
+        result = mapper.plan_project(
+            project(ga("1/1/0", "Zone-B-DoorSensor-B-Sensor-ACTIVE-FB", 1, 1))
+        )
+        sensor = result["config"]["binary_sensor"][0]
+        self.assertEqual(sensor["state_address"], "1/1/0")
+        self.assertIs(sensor["sync_state"], False)
+        self.assertNotIn("switch", result["config"])
+
+    def test_fb_name_alone_never_infers_a_sensor_when_objects_disagree(self):
+        # A writable command object on the same address still wins over the name.
+        p = project(
+            ga("1/1/0", "Relay-FB", 1, 1),
+            objects={
+                "cmd": {
+                    "group_address_links": ["1/1/0"],
+                    "dpts": [{"main": 1, "sub": 1}],
+                    "flags": {"communication": True, "write": True, "transmit": False},
+                }
+            },
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("binary_sensor", result["config"])
 
     def test_no_dpt_one_switch_or_scene_number_guessed_from_address(self):
         result = mapper.plan_project(

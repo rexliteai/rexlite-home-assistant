@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.12
+
+- Recognise the `Brightness` / `Value` and `Color` / `Colour` group-address
+  label spellings as the same abbreviated roles as `VAL` / `CT` (feedback
+  variants included). The exact-datapoint-type guard is unchanged, so a
+  `Value` address carrying a temperature datapoint (an air-conditioner
+  setpoint) is not read as light brightness.
+- Treat an abbreviated channel with a proven brightness or colour-temperature
+  address as a dimmable `light` even when the terse installer name carries no
+  light word; a channel that proves only on/off stays a `switch`.
+- Pair a colour-temperature channel that uses DPT 5.001 (relative percentage)
+  as well as DPT 7.600 (absolute kelvin), emitting the matching
+  `color_temperature_mode`; drop a feedback address that disagrees with the
+  command's encoding instead of pairing it.
+- Accept a proven on/off feedback address that a DPT 1.002 (Bool) logic-block
+  listener also subscribes to, as long as a Switch or State object drives it
+  and the same producing actuator channel is proven.
+- Map an "…-FB" group address that has an exact 1-bit status datapoint
+  (1.001/1.011) and no communication object at all as a read-only
+  `binary_sensor`; a writable object on the address still overrides the name.
+- Bump the mapping revision (now 4) so an already-imported project is
+  re-planned on upgrade and picks up all of the above without a re-upload.
+
 ## 0.1.11
 
 - Map the shade group-address labels `Close` (DPT 1.008 up/down), `Step`
