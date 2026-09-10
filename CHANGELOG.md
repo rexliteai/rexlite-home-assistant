@@ -2,6 +2,10 @@
 
 ## 0.1.12
 
+- Include Nick's opt-in, reversible HACS 2.0.5 REXLiTE icon repair tool.
+  It verifies the official frontend files, preserves the original brand icon,
+  updates gzip copies and backs up files for restoration. Run it explicitly
+  on the target host; updating the integration does not apply this repair.
 - Recognise the `Brightness` / `Value` and `Color` / `Colour` group-address
   label spellings as the same abbreviated roles as `VAL` / `CT` (feedback
   variants included). The exact-datapoint-type guard is unchanged, so a
@@ -20,8 +24,9 @@
 - Map an "…-FB" group address that has an exact 1-bit status datapoint
   (1.001/1.011) and no communication object at all as a read-only
   `binary_sensor`; a writable object on the address still overrides the name.
-- Bump the mapping revision (now 4) so an already-imported project is
-  re-planned on upgrade and picks up all of the above without a re-upload.
+- Bump the mapping revision (now 4) so reimporting an already-imported
+  project applies the new rules. After upgrading and fully restarting Home
+  Assistant, upload the original ETS project again in MAX’Is.
 
 ## 0.1.11
 
