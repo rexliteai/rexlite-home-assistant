@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.13
+
+- Recognise the `Command` / `Status` (and `Brightness Command` /
+  `Brightness Status`, plus the Chinese `指令` / `亮度指令`) group-address
+  label convention alongside `開關` / `狀態`, so a dimmable channel exported
+  with those labels maps to a single `light` instead of an unpaired `switch`,
+  `binary_sensor` and `sensor` with the brightness-command address dropped.
+  The exact-datapoint-type guard is unchanged: a `- Command` label that does
+  not carry a 1.001 datapoint still blocks the whole name prefix rather than
+  mismapping it.
+- Bump the mapping revision (now 5) so an already-imported project is
+  re-planned on upgrade.
+
 ## 0.1.12
 
 - Include Nick's opt-in, reversible HACS 2.0.5 REXLiTE icon repair tool.

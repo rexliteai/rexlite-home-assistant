@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 4
+MAPPER_REVISION = 5
 
 # role: (YAML field, allowed exact DPTs). Names here are semantic roles, not GA
 # names. Standard ETS roles include AbsoluteSetvalueControl/ActualDimmingValue.
@@ -61,14 +61,24 @@ ROLE_FIELDS = {
 # a label that does not carry the datapoint type its role requires. "open" is
 # deliberately absent: paired with "close" it only produces an ambiguous
 # duplicate up/down role.
+# "Command"/"Status" (and "Brightness Command"/"Brightness Status", plus the
+# Chinese "指令"/"亮度指令") is the other common English convention alongside
+# "開關"/"狀態"; a role datapoint-type mismatch still blocks the whole prefix.
 NAME_ROLES = {
     "亮度狀態": "actualdimmingvalue",
     "brightness status": "actualdimmingvalue",
+    "亮度指令": "absolutesetvaluecontrol",
+    "brightness command": "absolutesetvaluecontrol",
     "亮度": "absolutesetvaluecontrol",
     "brightness": "absolutesetvaluecontrol",
+    "開關指令": "switchonoff",
+    "on/off command": "switchonoff",
+    "switch command": "switchonoff",
     "開關": "switchonoff",
     "on/off": "switchonoff",
     "switch": "switchonoff",
+    "指令": "switchonoff",
+    "command": "switchonoff",
     "狀態": "infoonoff",
     "status": "infoonoff",
     "上下": "moveupdown",

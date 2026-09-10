@@ -437,6 +437,63 @@ class KNXProjectMappingTests(unittest.TestCase):
         )
         self.assertNotIn("cover", result["config"])
 
+    def test_command_status_labels_map_one_dimmable_light(self):
+        result = mapper.plan_project(
+            project(
+                ga("1/0/1", "Living Room Light - Command", 1, 1),
+                ga("1/0/2", "Living Room Light - Status", 1, 1),
+                ga("1/1/1", "Living Room Light - Brightness Command", 5, 1),
+                ga("1/1/2", "Living Room Light - Brightness Status", 5, 1),
+            )
+        )
+        self.assertEqual(result["entityCount"], 1)
+        self.assertEqual(result["skipped"], [])
+        light = result["config"]["light"][0]
+        self.assertEqual(
+            {
+                k: light[k]
+                for k in (
+                    "address",
+                    "state_address",
+                    "brightness_address",
+                    "brightness_state_address",
+                )
+            },
+            {
+                "address": "1/0/1",
+                "state_address": "1/0/2",
+                "brightness_address": "1/1/1",
+                "brightness_state_address": "1/1/2",
+            },
+        )
+        self.assertEqual(result["entities"][0]["source"], "exact-name-role")
+
+    def test_chinese_command_label_keeps_the_prefix_before_the_switch_word(self):
+        result = mapper.plan_project(
+            project(
+                ga("2/0/1", "客廳主燈 開關指令", 1, 1),
+                ga("2/0/2", "客廳主燈 狀態", 1, 1),
+                ga("2/0/3", "客廳主燈 亮度指令", 5, 1),
+                ga("2/0/4", "客廳主燈 亮度狀態", 5, 1),
+            )
+        )
+        light = result["config"]["light"][0]
+        self.assertEqual(light["name"], "客廳主燈")
+        self.assertEqual(light["address"], "2/0/1")
+        self.assertEqual(light["brightness_address"], "2/0/3")
+
+    def test_command_label_with_wrong_datapoint_type_blocks_the_prefix(self):
+        result = mapper.plan_project(
+            project(
+                ga("1/0/1", "Hall Light - Command", 3, 7),
+                ga("1/0/2", "Hall Light - Status", 1, 1),
+            )
+        )
+        self.assertEqual(result["entityCount"], 0)
+        self.assertEqual(
+            {s["reason"] for s in result["skipped"]}, {"role_datapoint_type_mismatch"}
+        )
+
     def test_fb_named_binary_address_without_objects_is_a_read_only_sensor(self):
         result = mapper.plan_project(
             project(ga("1/1/0", "Zone-B-DoorSensor-B-Sensor-ACTIVE-FB", 1, 1))
