@@ -43,6 +43,8 @@ REXLiTE AI `0.1.7` 新增單次上傳 ETS 工程檔流程：主機核對檔案�
 
 `0.1.12` 亦提供 Nick 的 [HACS 2.0.5 圖示修復工具](docs/brand-icons.md)，可備份及還原原始檔案。此工具需在目標主機明確執行，更新 REXLiTE 整合不會自動套用。
 
+`0.1.13` 支援 `Command`／`Status`（以及 `Brightness Command`／`Brightness Status`、中文 `指令`／`亮度指令`）標籤，與既有的 `開關`／`狀態` 命名並存；以此命名匯出的可調光通道會合併為單一 `light`，而非拆成 `switch`＋`binary_sensor`＋`sensor` 且遺失亮度指令位址。DPT 不符的 `- Command` 標籤仍不會被誤配。升級並重新啟動 Home Assistant 後，請在 MAX’Is 重新上傳原工程檔。
+
 ## 支援環境
 
 本整合支援下列 Home Assistant 安裝方式：
