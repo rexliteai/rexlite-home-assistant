@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 3
+MAPPER_REVISION = 4
 
 # role: (YAML field, allowed exact DPTs). Names here are semantic roles, not GA
 # names. Standard ETS roles include AbsoluteSetvalueControl/ActualDimmingValue.
@@ -138,9 +138,15 @@ ABBREVIATED_ROLES = {
     "SW-FB": ("state_address", {(1, 1), (1, 11)}),
     "VAL": ("brightness_address", {(5, 1)}),
     "VAL-FB": ("brightness_state_address", {(5, 1)}),
-    "CT": ("color_temperature_address", {(7, 600)}),
-    "CT-FB": ("color_temperature_state_address", {(7, 600)}),
+    "CT": ("color_temperature_address", {(7, 600), (5, 1)}),
+    "CT-FB": ("color_temperature_state_address", {(7, 600), (5, 1)}),
 }
+
+# 1-bit encodings that a proven on/off feedback address may mix: Switch (0/1),
+# State (0/1) and Bool (0/1) share the same wire format, so a status object
+# driving the address alongside logic-block Bool listeners is not a real
+# conflict once the same producing actuator channel has been proven.
+FEEDBACK_BIT_DPTS = {(1, 1), (1, 2), (1, 11)}
 
 
 def _semantic(value: Any) -> str:
@@ -332,6 +338,20 @@ class _Planner:
                 keys.add(key)
         return keys
 
+    # Installer spellings for the same abbreviated actuator roles. The exact-DPT
+    # guard in ABBREVIATED_ROLES still applies, so a "VALUE" that carries a
+    # temperature datapoint (a climate setpoint) never becomes light brightness.
+    _ROLE_ALIASES = {
+        "BRIGHTNESS": "VAL",
+        "VALUE": "VAL",
+        "BRIGHTNESS-FB": "VAL-FB",
+        "VALUE-FB": "VAL-FB",
+        "COLOR": "CT",
+        "COLOUR": "CT",
+        "COLOR-FB": "CT-FB",
+        "COLOUR-FB": "CT-FB",
+    }
+
     def abbreviated_groups(self) -> None:
         """Join proven actuator channels with exact SW/VAL/CT installer roles."""
         grouped: dict[str, dict[str, list[str]]] = defaultdict(
@@ -342,15 +362,20 @@ class _Planner:
             if address in self.used:
                 continue
             match = re.fullmatch(
-                r"(.+?)[\s_-]+(SW-FB|VAL-FB|CT-FB|SW|VAL|CT)",
+                r"(.+?)[\s_-]+"
+                r"(SW-FB|VAL-FB|CT-FB|BRIGHTNESS-FB|VALUE-FB|COLOU?R-FB"
+                r"|SW|VAL|CT|BRIGHTNESS|VALUE|COLOU?R)",
                 _label(ga.get("name"), ""),
                 re.IGNORECASE,
             )
             if match:
                 name, role = match.groups()
+                name = name.rstrip(" ,;:-_/") or name
+                role = role.upper()
+                role = self._ROLE_ALIASES.get(role, role)
                 key = name.casefold()
                 names[key] = name
-                grouped[key][role.upper()].append(address)
+                grouped[key][role].append(address)
         for key, roles in sorted(grouped.items()):
             commands = roles.get("SW", [])
             if len(commands) != 1:
@@ -369,9 +394,11 @@ class _Planner:
                 # one output's feedback cannot prove the aggregate state.
                 continue
             fields = {"address": command}
-            is_light = bool(re.search(r"燈|照明|\blight\b", names[key], re.IGNORECASE))
+            named_light = bool(
+                re.search(r"燈|照明|\blight\b", names[key], re.IGNORECASE)
+            )
             for role, addresses in sorted(roles.items()):
-                if role == "SW" or (not is_light and role != "SW-FB"):
+                if role == "SW":
                     continue
                 field, expected = ABBREVIATED_ROLES[role]
                 if len(addresses) != 1:
@@ -385,12 +412,15 @@ class _Planner:
                 ):
                     self.issues.setdefault(address, "unproven_same_actuator_channel")
                     continue
-                # DPT Switch and Status share 0=off/1=on. Permit only this
-                # exact feedback disagreement after proving the same producer.
+                # Switch/State/Bool share 0=off/1=on. Permit only a mix of those
+                # 1-bit encodings after proving the same producing actuator, and
+                # only when at least one Switch or State object is present.
+                choices = {choice for choice in self.dpt_choices[address] if choice}
                 if (
                     role == "SW-FB"
                     and self.issues.get(address) == "conflicting_datapoint_type"
-                    and self.dpt_choices[address] == {(1, 1), (1, 11)}
+                    and choices <= FEEDBACK_BIT_DPTS
+                    and choices & {(1, 1), (1, 11)}
                 ):
                     self.dpts[address] = (1, 11)
                     self.blocked.discard(address)
@@ -405,8 +435,27 @@ class _Planner:
             for feature in ("brightness", "color_temperature"):
                 if f"{feature}_address" not in fields:
                     fields.pop(f"{feature}_state_address", None)
+            # A proven brightness or colour-temperature channel is a dimmable
+            # light even when the terse installer name carries no light word.
+            is_light = named_light or bool(
+                {"brightness_address", "color_temperature_address"} & fields.keys()
+            )
+            if not is_light:
+                # A plain on/off actuator keeps only the switch-compatible roles.
+                fields = {
+                    role: address
+                    for role, address in fields.items()
+                    if role in {"address", "state_address"}
+                }
             if "color_temperature_address" in fields:
-                fields["color_temperature_mode"] = "absolute"
+                command_dpt = self.dpts[fields["color_temperature_address"]]
+                feedback = fields.get("color_temperature_state_address")
+                if feedback is not None and self.dpts[feedback] != command_dpt:
+                    # Feedback must use the command's encoding, not the other one.
+                    fields.pop("color_temperature_state_address")
+                fields["color_temperature_mode"] = (
+                    "relative" if command_dpt == (5, 1) else "absolute"
+                )
             if len(fields) == 1:
                 # Retain the existing single-address fallback when pairing
                 # proves no additional feature. Never fabricate state feedback.
@@ -674,11 +723,23 @@ class _Planner:
             telemetry = self.has_flag(address, "transmit") and (
                 not self.has_flag(address, "write") or named_feedback
             )
+            # An "…-FB" group address with an exact 1-bit status datapoint and no
+            # communication object at all is a read-only status: nothing declares
+            # it a command and there are no flags to contradict the name.
+            orphan_feedback = (
+                named_feedback
+                and not self.objects[address]
+                and dpt in {(1, 1), (1, 11)}
+            )
             if dpt in {(17, 1), (18, 1)}:
                 self.issues[address] = "missing_explicit_scene_number"
-            elif dpt == (1, 11) or (
-                dpt in {(1, 1), (1, 2), (1, 5), (1, 9), (1, 18), (1, 19), (1, 22)}
-                and telemetry
+            elif (
+                dpt == (1, 11)
+                or orphan_feedback
+                or (
+                    dpt in {(1, 1), (1, 2), (1, 5), (1, 9), (1, 18), (1, 19), (1, 22)}
+                    and telemetry
+                )
             ):
                 config = {"state_address": address}
                 if not self.has_flag(address, "read"):
