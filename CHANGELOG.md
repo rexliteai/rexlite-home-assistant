@@ -8,8 +8,8 @@
   convention. The exact-datapoint-type guard still rejects a label that does
   not carry its role's datapoint type, so an impulse-relay `Close`/`Open`
   pair (DPT 1.001) is not turned into a cover.
-- Bump the mapping revision so an already-imported project is re-planned on
-  upgrade, recovering these covers without a manual re-upload.
+- Bump the mapping revision so reimporting an already-imported project after
+  upgrading and restarting Home Assistant applies the new cover mapping.
 
 ## 0.1.10
 

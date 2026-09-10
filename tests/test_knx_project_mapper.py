@@ -634,6 +634,11 @@ class KNXProjectMappingTests(unittest.TestCase):
             sample_conventions(),
             abbreviated_light(),
             project(
+                ga("2/1/0", "Example-MatterShade-Blind-Close", 1, 8),
+                ga("2/1/1", "Example-MatterShade-Blind-Step", 1, 7),
+                ga("2/1/2", "Example-MatterShade-Blind-POS", 5, 1),
+            ),
+            project(
                 ga("5/0/1", "AC 室內溫度", 9, 1),
                 ga("5/0/2", "AC 目標溫度", 9, 1),
                 ga("5/0/3", "AC 目標溫度狀態", 9, 1),
