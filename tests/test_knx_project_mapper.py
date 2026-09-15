@@ -98,6 +98,35 @@ def abbreviated_light(base="Example-Dali-Light", roles=None):
     return project(*groups, objects=objects)
 
 
+def independent_units(base, unit_roles, count=3):
+    """`count` independently-proven actuator channels sharing one literal name
+    prefix -- models several real outputs (DALI circuits, air-conditioners)
+    wired under the same room/unit label, each with its own device identity so
+    `_channel_key` can tell them apart. Returns (project, table) where table
+    maps (unit, role) -> the group address created for that role."""
+    groups, objects, table = [], {}, {}
+    for unit in range(1, count + 1):
+        device = f"2.9.{unit}"
+        for idx, (role, main, sub) in enumerate(unit_roles, start=1):
+            address = f"{unit}/0/{idx}"
+            groups.append(ga(address, f"{base}-{role}", main, sub))
+            objects[f"{device}/O-{role}"] = {
+                "device_address": device,
+                "channel": f"CH-{unit}",
+                "text": "Output",
+                "dpts": [{"main": main, "sub": sub}],
+                "flags": {
+                    "communication": True,
+                    "read": role.endswith("-FB"),
+                    "write": not role.endswith("-FB"),
+                    "transmit": role.endswith("-FB"),
+                },
+                "group_address_links": [address],
+            }
+            table[(unit, role)] = address
+    return project(*groups, objects=objects), table
+
+
 def has_ha_distribution():
     try:
         importlib.metadata.version("homeassistant")
@@ -340,6 +369,128 @@ class KNXProjectMappingTests(unittest.TestCase):
         result = mapper.plan_project(p)
         self.assertNotIn("light", result["config"])
         self.assertEqual(result["config"]["switch"][0]["address"], "8/0/1")
+
+    def test_multiple_circuits_share_one_room_name_split_by_proven_channel(self):
+        # Three independent DALI outputs installed under one shared room
+        # label ("2F-01L") must not be refused as one big ambiguous group;
+        # each proven actuator channel gets its own light.
+        p, table = independent_units("2F-01L", [("SW", 1, 1), ("VAL", 5, 1)], count=3)
+        result = mapper.plan_project(p)
+        self.assertNotIn("switch", result["config"])
+        lights = result["config"]["light"]
+        self.assertEqual(len(lights), 3)
+        self.assertEqual(result["skipped"], [])
+        for unit in (1, 2, 3):
+            light = next(
+                light for light in lights if light["address"] == table[(unit, "SW")]
+            )
+            self.assertEqual(light["brightness_address"], table[(unit, "VAL")])
+
+    def test_multi_circuit_command_channel_collision_blocks_just_those_commands(self):
+        # Two group addresses wired to the exact same producing object are
+        # genuinely indistinguishable channels -- never guess between them,
+        # even though the multi-circuit split above proves distinct ones.
+        p, table = independent_units("2F-01L", [("SW", 1, 1)], count=1)
+        dup = copy.deepcopy(p["group_addresses"][table[(1, "SW")]])
+        dup["address"] = "9/0/9"
+        p["group_addresses"]["9/0/9"] = dup
+        obj_id = next(iter(p["communication_objects"]))
+        p["communication_objects"][obj_id]["group_address_links"].append("9/0/9")
+        result = mapper.plan_project(p)
+        self.assertNotIn("light", result["config"])
+        self.assertNotIn("switch", result["config"])
+        self.assertEqual(
+            {s["reason"] for s in result["skipped"]},
+            {"ambiguous_duplicate_function_role"},
+        )
+
+    def test_multi_circuit_optional_role_binds_only_its_own_command(self):
+        # Unit 2's brightness channel is unprovable; unit 1's command must
+        # still get its own brightness pairing instead of both being blocked.
+        p, table = independent_units("2F-01L", [("SW", 1, 1), ("VAL", 5, 1)], count=2)
+        unproven = table[(2, "VAL")]
+        del p["group_addresses"][unproven]
+        for obj_id, obj in list(p["communication_objects"].items()):
+            if unproven in obj.get("group_address_links", []):
+                del p["communication_objects"][obj_id]
+        result = mapper.plan_project(p)
+        lights = result["config"]["light"]
+        self.assertEqual(len(lights), 1)
+        self.assertEqual(lights[0]["address"], table[(1, "SW")])
+        self.assertEqual(lights[0]["brightness_address"], table[(1, "VAL")])
+        switches = result["config"]["switch"]
+        self.assertEqual(len(switches), 1)
+        self.assertEqual(switches[0]["address"], table[(2, "SW")])
+
+    def test_climate_dialect_maps_on_off_mode_and_fan(self):
+        p, table = independent_units(
+            "13F-A12",
+            [
+                ("Climate-SW", 1, 1),
+                ("Climate-SW-FB", 1, 11),
+                ("Climate-MODE", 20, 105),
+                ("Climate-MODE-FB", 20, 105),
+                ("Climate-FAN", 5, 1),
+                ("Climate-FAN-FB", 5, 1),
+            ],
+            count=1,
+        )
+        result = mapper.plan_project(p)
+        self.assertEqual(result["entityCount"], 1)
+        climate = result["config"]["climate"][0]
+        self.assertEqual(climate["on_off_address"], table[(1, "Climate-SW")])
+        self.assertEqual(climate["on_off_state_address"], table[(1, "Climate-SW-FB")])
+        self.assertEqual(climate["controller_mode_address"], table[(1, "Climate-MODE")])
+        self.assertEqual(
+            climate["controller_mode_state_address"], table[(1, "Climate-MODE-FB")]
+        )
+        self.assertEqual(climate["fan_speed_address"], table[(1, "Climate-FAN")])
+        self.assertEqual(
+            climate["fan_speed_state_address"], table[(1, "Climate-FAN-FB")]
+        )
+        self.assertNotIn("temperature_address", climate)
+
+    def test_climate_dialect_without_mode_or_fan_falls_back_to_plain_switch(self):
+        # A bare on/off pair is not distinctly a climate device; do not
+        # manufacture a control-less climate entity from it.
+        p, table = independent_units("13F-A12", [("Climate-SW", 1, 1)], count=1)
+        result = mapper.plan_project(p)
+        self.assertNotIn("climate", result["config"])
+        self.assertEqual(
+            result["config"]["switch"][0]["address"], table[(1, "Climate-SW")]
+        )
+
+    def test_climate_dialect_rejects_non_standard_fan_datapoint(self):
+        # DPT 5.010 is a raw byte count, not the DPT 5.001 percentage HA's fan
+        # speed expects; a mismatched fan datapoint must not be guessed into
+        # the entity, even though the proven mode channel still forms one.
+        p, table = independent_units(
+            "13F-A12",
+            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105), ("Climate-FAN", 5, 10)],
+            count=1,
+        )
+        result = mapper.plan_project(p)
+        climate = result["config"]["climate"][0]
+        self.assertNotIn("fan_speed_address", climate)
+        self.assertEqual(climate["controller_mode_address"], table[(1, "Climate-MODE")])
+        # The unmatched fan address is never silently folded into any entity;
+        # fallback() is free to give it its own (unrelated-role) skip reason.
+        fan_address = table[(1, "Climate-FAN")]
+        self.assertIn(fan_address, {s["address"] for s in result["skipped"]})
+
+    def test_multiple_climate_units_share_one_prefix_split_by_proven_channel(self):
+        p, table = independent_units(
+            "13F-A12",
+            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105)],
+            count=2,
+        )
+        result = mapper.plan_project(p)
+        climates = result["config"]["climate"]
+        self.assertEqual(len(climates), 2)
+        self.assertEqual(
+            {c["on_off_address"] for c in climates},
+            {table[(1, "Climate-SW")], table[(2, "Climate-SW")]},
+        )
 
     def test_explicit_sender_scene_parameter_allows_recall_compatible_types(self):
         group = ga("8/2/1", "Example arbitrary scene label", 18, 1)

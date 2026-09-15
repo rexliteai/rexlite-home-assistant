@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 5
+MAPPER_REVISION = 6
 
 # role: (YAML field, allowed exact DPTs). Names here are semantic roles, not GA
 # names. Standard ETS roles include AbsoluteSetvalueControl/ActualDimmingValue.
@@ -150,6 +150,21 @@ ABBREVIATED_ROLES = {
     "VAL-FB": ("brightness_state_address", {(5, 1)}),
     "CT": ("color_temperature_address", {(7, 600), (5, 1)}),
     "CT-FB": ("color_temperature_state_address", {(7, 600), (5, 1)}),
+}
+
+# The installer "<unit>-Climate-SW/-MODE/-FAN(-FB)" convention observed across
+# real air-conditioner exports. HA's climate schema does not require a
+# temperature pair, so this dialect only ever emits on/off, controller-mode
+# (DPT 20.105, not the DPT 20.102 operation mode) and fan-speed (DPT 5.001
+# only -- a raw byte-count fan step such as 5.010 is a different, unverified
+# scale and is left unmapped rather than guessed). "SW" itself is the anchor
+# command and is intentionally absent here, mirroring ABBREVIATED_ROLES.
+CLIMATE_ROLE_FIELDS = {
+    "SW-FB": ("on_off_state_address", {(1, 1), (1, 11)}),
+    "MODE": ("controller_mode_address", {(20, 105)}),
+    "MODE-FB": ("controller_mode_state_address", {(20, 105)}),
+    "FAN": ("fan_speed_address", {(5, 1)}),
+    "FAN-FB": ("fan_speed_state_address", {(5, 1)}),
 }
 
 # 1-bit encodings that a proven on/off feedback address may mix: Switch (0/1),
@@ -362,6 +377,148 @@ class _Planner:
         "COLOUR-FB": "CT-FB",
     }
 
+    def _bind_optional_role(
+        self,
+        address: str,
+        role: str,
+        expected: set[tuple[int, int | None]],
+        anchor: set[tuple],
+    ) -> bool:
+        """Prove one optional-role address shares a command's actuator channel
+        and carries the role's exact datapoint type. Shared by every dialect
+        that pairs an anchor command with SW-FB/VAL/CT/MODE/FAN-style roles."""
+        if anchor != self._actuator_keys(address, feedback=role.endswith("-FB")):
+            self.issues.setdefault(address, "unproven_same_actuator_channel")
+            return False
+        # Switch/State/Bool share 0=off/1=on. Permit only a mix of those 1-bit
+        # encodings after proving the same producing actuator, and only when
+        # at least one Switch or State object is present.
+        choices = {choice for choice in self.dpt_choices[address] if choice}
+        if (
+            role == "SW-FB"
+            and self.issues.get(address) == "conflicting_datapoint_type"
+            and choices <= FEEDBACK_BIT_DPTS
+            and choices & {(1, 1), (1, 11)}
+        ):
+            self.dpts[address] = (1, 11)
+            self.blocked.discard(address)
+            self.issues.pop(address, None)
+        if address in self.blocked or self.dpts.get(address) not in expected:
+            self.issues.setdefault(address, "role_datapoint_type_mismatch")
+            return False
+        return True
+
+    def _bind_multi_command_roles(
+        self,
+        commands: list[str],
+        roles: dict[str, list[str]],
+        role_fields: dict[str, tuple[str, set]],
+    ) -> dict[str, dict[str, str]]:
+        """Several distinct outputs share one name prefix (e.g. three DALI
+        circuits or air-conditioners in the same room). Bind each command only
+        to the optional-role addresses proven to share its own actuator
+        channel, instead of refusing to disambiguate the whole shared-name
+        group. A command or optional address without a single proven channel,
+        or two commands/addresses that resolve to the same channel, is never
+        guessed -- only distinct, individually-proven channels are split out.
+        """
+        anchors: dict[str, tuple] = {}
+        for command in commands:
+            if command in self.blocked or self.dpts.get(command) != (1, 1):
+                continue
+            anchor = self._actuator_keys(command, feedback=False)
+            if len(anchor) == 1:
+                anchors[command] = next(iter(anchor))
+        by_anchor: dict[tuple, list[str]] = defaultdict(list)
+        for command, anchor in anchors.items():
+            by_anchor[anchor].append(command)
+        for dupes in by_anchor.values():
+            if len(dupes) > 1:
+                # Two commands that resolve to the same actuator channel are
+                # genuinely indistinguishable; block just those.
+                self.blocked.update(dupes)
+                for command in dupes:
+                    self.issues[command] = "ambiguous_duplicate_function_role"
+                    anchors.pop(command, None)
+        fields_by_command: dict[str, dict[str, str]] = {c: {} for c in anchors}
+        for role, addresses in sorted(roles.items()):
+            if role == "SW" or role not in role_fields:
+                continue
+            field, expected = role_fields[role]
+            claims: dict[str, list[str]] = defaultdict(list)
+            for address in addresses:
+                key = self._actuator_keys(address, feedback=role.endswith("-FB"))
+                own = next(iter(key)) if len(key) == 1 else None
+                matched = [
+                    command
+                    for command, a in anchors.items()
+                    if own is not None and a == own
+                ]
+                if len(matched) != 1:
+                    self.issues.setdefault(address, "unproven_same_actuator_channel")
+                    continue
+                claims[matched[0]].append(address)
+            for command, claimants in claims.items():
+                if len(claimants) != 1:
+                    # Two addresses under the same role proved to share the
+                    # same command's channel: never guess which one is real.
+                    # Leave them unblocked (unlike a genuine command-channel
+                    # collision above) so a still-useful standalone reading --
+                    # e.g. an unrelated room-temperature sensor that merely
+                    # can't be tied to one specific unit -- keeps its normal
+                    # fallback classification instead of being suppressed.
+                    for address in claimants:
+                        self.issues.setdefault(
+                            address, "ambiguous_duplicate_function_role"
+                        )
+                    continue
+                address = claimants[0]
+                if self._bind_optional_role(
+                    address, role, expected, {anchors[command]}
+                ):
+                    fields_by_command[command][field] = address
+        return fields_by_command
+
+    def _finish_abbreviated(self, name: str, fields: dict[str, str]) -> None:
+        # Brightness / CT features are independent: a malformed optional
+        # feature must not erase a proven on/off channel. Orphan feedback
+        # remains eligible for an observation-only fallback.
+        for feature in ("brightness", "color_temperature"):
+            if f"{feature}_address" not in fields:
+                fields.pop(f"{feature}_state_address", None)
+        # A proven brightness or colour-temperature channel is a dimmable
+        # light even when the terse installer name carries no light word.
+        named_light = bool(re.search(r"燈|照明|\blight\b", name, re.IGNORECASE))
+        is_light = named_light or bool(
+            {"brightness_address", "color_temperature_address"} & fields.keys()
+        )
+        if not is_light:
+            # A plain on/off actuator keeps only the switch-compatible roles.
+            fields = {
+                role: address
+                for role, address in fields.items()
+                if role in {"address", "state_address"}
+            }
+        if "color_temperature_address" in fields:
+            command_dpt = self.dpts[fields["color_temperature_address"]]
+            feedback = fields.get("color_temperature_state_address")
+            if feedback is not None and self.dpts[feedback] != command_dpt:
+                # Feedback must use the command's encoding, not the other one.
+                fields.pop("color_temperature_state_address")
+            fields["color_temperature_mode"] = (
+                "relative" if command_dpt == (5, 1) else "absolute"
+            )
+        if len(fields) == 1:
+            # Retain the existing single-address fallback when pairing proves
+            # no additional feature. Never fabricate state feedback.
+            return
+        self._add(
+            "light" if is_light else "switch",
+            name,
+            fields,
+            "exact-name-object-channel",
+        )
+
     def abbreviated_groups(self) -> None:
         """Join proven actuator channels with exact SW/VAL/CT installer roles."""
         grouped: dict[str, dict[str, list[str]]] = defaultdict(
@@ -388,12 +545,16 @@ class _Planner:
                 grouped[key][role].append(address)
         for key, roles in sorted(grouped.items()):
             commands = roles.get("SW", [])
-            if len(commands) != 1:
-                # Never choose between duplicate command roles.
-                if len(commands) > 1:
-                    self.blocked.update(commands)
-                    for address in commands:
-                        self.issues[address] = "ambiguous_duplicate_function_role"
+            if not commands:
+                continue
+            if len(commands) > 1:
+                # Several distinct outputs (e.g. multiple DALI circuits) share
+                # one room/name prefix: split them by proven actuator channel
+                # instead of refusing to disambiguate the whole group.
+                for command, fields in self._bind_multi_command_roles(
+                    commands, roles, ABBREVIATED_ROLES
+                ).items():
+                    self._finish_abbreviated(names[key], {"address": command, **fields})
                 continue
             command = commands[0]
             if command in self.blocked or self.dpts.get(command) != (1, 1):
@@ -404,78 +565,87 @@ class _Planner:
                 # one output's feedback cannot prove the aggregate state.
                 continue
             fields = {"address": command}
-            named_light = bool(
-                re.search(r"燈|照明|\blight\b", names[key], re.IGNORECASE)
-            )
             for role, addresses in sorted(roles.items()):
                 if role == "SW":
                     continue
                 field, expected = ABBREVIATED_ROLES[role]
                 if len(addresses) != 1:
+                    # Never choose between duplicate optional roles for a
+                    # single command; only distinct, separately-proven
+                    # commands (handled above) may split addresses this way.
                     for address in addresses:
                         self.blocked.add(address)
                         self.issues[address] = "ambiguous_duplicate_function_role"
                     continue
-                address = addresses[0]
-                if anchor != self._actuator_keys(
-                    address, feedback=role.endswith("-FB")
-                ):
-                    self.issues.setdefault(address, "unproven_same_actuator_channel")
-                    continue
-                # Switch/State/Bool share 0=off/1=on. Permit only a mix of those
-                # 1-bit encodings after proving the same producing actuator, and
-                # only when at least one Switch or State object is present.
-                choices = {choice for choice in self.dpt_choices[address] if choice}
-                if (
-                    role == "SW-FB"
-                    and self.issues.get(address) == "conflicting_datapoint_type"
-                    and choices <= FEEDBACK_BIT_DPTS
-                    and choices & {(1, 1), (1, 11)}
-                ):
-                    self.dpts[address] = (1, 11)
-                    self.blocked.discard(address)
-                    self.issues.pop(address, None)
-                if address in self.blocked or self.dpts.get(address) not in expected:
-                    self.issues.setdefault(address, "role_datapoint_type_mismatch")
-                    continue
-                fields[field] = address
-            # Brightness / CT features are independent: a malformed optional
-            # feature must not erase a proven on/off channel. Orphan feedback
-            # remains eligible for an observation-only fallback.
-            for feature in ("brightness", "color_temperature"):
-                if f"{feature}_address" not in fields:
-                    fields.pop(f"{feature}_state_address", None)
-            # A proven brightness or colour-temperature channel is a dimmable
-            # light even when the terse installer name carries no light word.
-            is_light = named_light or bool(
-                {"brightness_address", "color_temperature_address"} & fields.keys()
-            )
-            if not is_light:
-                # A plain on/off actuator keeps only the switch-compatible roles.
-                fields = {
-                    role: address
-                    for role, address in fields.items()
-                    if role in {"address", "state_address"}
-                }
-            if "color_temperature_address" in fields:
-                command_dpt = self.dpts[fields["color_temperature_address"]]
-                feedback = fields.get("color_temperature_state_address")
-                if feedback is not None and self.dpts[feedback] != command_dpt:
-                    # Feedback must use the command's encoding, not the other one.
-                    fields.pop("color_temperature_state_address")
-                fields["color_temperature_mode"] = (
-                    "relative" if command_dpt == (5, 1) else "absolute"
-                )
-            if len(fields) == 1:
-                # Retain the existing single-address fallback when pairing
-                # proves no additional feature. Never fabricate state feedback.
+                if self._bind_optional_role(addresses[0], role, expected, anchor):
+                    fields[field] = addresses[0]
+            self._finish_abbreviated(names[key], fields)
+
+    def climate_groups(self) -> None:
+        """Join the installer's "<unit>-Climate-SW/-MODE/-FAN(-FB)" convention
+        into a climate entity built only from on/off, controller-mode and
+        fan-speed addresses -- HA's climate schema does not require a
+        temperature pair, unlike the ETS-Function climate path in `_group()`.
+        Every role still needs the same proven actuator-channel evidence as
+        the SW/VAL/CT light dialect, and the exact-DPT guard still applies.
+        """
+        grouped: dict[str, dict[str, list[str]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        names = {}
+        for address, ga in sorted(self.groups.items()):
+            if address in self.used:
                 continue
-            self._add(
-                "light" if is_light else "switch",
-                names[key],
-                fields,
-                "exact-name-object-channel",
+            match = re.fullmatch(
+                r"(.+?)[\s_-]+climate[\s_-]+(sw-fb|sw|mode-fb|mode|fan-fb|fan)",
+                _label(ga.get("name"), ""),
+                re.IGNORECASE,
             )
+            if match:
+                name, role = match.groups()
+                name = name.rstrip(" ,;:-_/") or name
+                key = name.casefold()
+                names[key] = name
+                grouped[key][role.upper()].append(address)
+        for key, roles in sorted(grouped.items()):
+            commands = roles.get("SW", [])
+            if not commands:
+                continue
+            if len(commands) > 1:
+                for command, fields in self._bind_multi_command_roles(
+                    commands, roles, CLIMATE_ROLE_FIELDS
+                ).items():
+                    fields["on_off_address"] = command
+                    self._finish_climate(names[key], fields)
+                continue
+            command = commands[0]
+            if command in self.blocked or self.dpts.get(command) != (1, 1):
+                continue
+            anchor = self._actuator_keys(command, feedback=False)
+            if len(anchor) != 1:
+                continue
+            fields = {"on_off_address": command}
+            for role, addresses in sorted(roles.items()):
+                if role == "SW":
+                    continue
+                field, expected = CLIMATE_ROLE_FIELDS[role]
+                if len(addresses) != 1:
+                    for address in addresses:
+                        self.blocked.add(address)
+                        self.issues[address] = "ambiguous_duplicate_function_role"
+                    continue
+                if self._bind_optional_role(addresses[0], role, expected, anchor):
+                    fields[field] = addresses[0]
+            self._finish_climate(names[key], fields)
+
+    def _finish_climate(self, name: str, fields: dict[str, str]) -> None:
+        # A bare on/off pair with no proven controller-mode or fan-speed
+        # channel is not distinctly a climate device; leave it for the plain
+        # switch fallback instead of manufacturing a control-less climate
+        # entity.
+        if not {"controller_mode_address", "fan_speed_address"} & fields.keys():
+            return
+        self._add("climate", name, fields, "exact-name-object-channel")
 
     def scene_metadata(self) -> None:
         """Use explicit sender parameters recovered from the same ETS archive."""
@@ -526,6 +696,7 @@ class _Planner:
             or config.get("move_long_address")
             or config.get("position_address")
             or config.get("target_temperature_address")
+            or config.get("on_off_address")
             or config.get("state_address")
             or config.get("temperature_address")
         )
@@ -848,6 +1019,7 @@ def plan_project(project: dict) -> dict:
         raise ValueError("Parsed ETS project must be an object")
     planner = _Planner(project)
     planner.functions()
+    planner.climate_groups()
     planner.abbreviated_groups()
     planner.scene_metadata()
     planner.named_groups()
