@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.14
+
+- Split several distinct actuator outputs (e.g. multiple DALI circuits, or
+  several air-conditioners) sharing one installer name prefix into their own
+  entities by proven actuator channel, instead of refusing the whole
+  shared-name group as an ambiguous duplicate command role. Only individually
+  distinct, individually-proven channels are split out; a command or optional
+  role address without a single proven channel, or two that resolve to the
+  same channel, is still never guessed.
+- Recognise the installer `<unit>-Climate-SW/-MODE/-FAN(-FB)` convention seen
+  on real air-conditioner exports and map it to a `climate` entity built from
+  on/off, controller-mode (DPT 20.105) and fan-speed (DPT 5.001) addresses.
+  HA's climate schema does not require a temperature pair, unlike the existing
+  ETS-Function climate path, so a bare on/off pair with no proven mode or fan
+  channel is left as a plain switch rather than a control-less climate entity.
+  A non-standard fan/mode datapoint (observed as a raw byte-count 5.010 on
+  some real exports, inconsistent with the 5.001 percentage HA expects) is
+  left unmapped rather than guessed.
+- Bump the mapping revision (now 6) so an already-imported project is
+  re-planned on upgrade.
+
 ## 0.1.13
 
 - Recognise the `Command` / `Status` (and `Brightness Command` /
