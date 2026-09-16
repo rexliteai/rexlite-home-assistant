@@ -32,8 +32,9 @@ async def main():
             upnp={"manufacturer": "TP-Link", "modelName": "X55"},
         )
 
-        async def register(hass, handler):
+        async def register(hass, handler, match_dict):
             nonlocal callback
+            assert match_dict["ST"] in m.ROUTER_SEARCH_TYPES
             callback = handler
             await handler(device, ssdp.SsdpChange.ALIVE)
             return remove
@@ -58,7 +59,38 @@ async def main():
             assert results[0]["candidates"][0]["host"] == "http://192.168.68.1"
             assert results[0]["candidates"][0]["installed"] is True
             scanner.async_scan.assert_awaited_once()
-            remove.assert_called_once()
+            assert remove.call_count == len(m.ROUTER_SEARCH_TYPES)
+
+        # A slow cached gateway must not suppress native probes or mDNS.
+        async def slow_register(hass, handler, match_dict):
+            await asyncio.sleep(60)
+
+        from homeassistant.components import zeroconf
+
+        scanner.async_scan.reset_mock(side_effect=True)
+        scanner.async_scan.side_effect = None
+        with (
+            patch.object(m, "CALLBACK_SETUP_TIMEOUT", 0.01),
+            patch.object(ssdp, "async_register_callback", slow_register),
+            patch(
+                "homeassistant.loader.async_get_zeroconf",
+                AsyncMock(return_value={"_http._tcp.local.": []}),
+            ),
+            patch.object(
+                zeroconf,
+                "async_get_async_instance",
+                AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
+            ),
+            patch(
+                "zeroconf.asyncio.AsyncServiceBrowser", return_value=browser
+            ) as browse,
+        ):
+            result = await m.DeviceDiscovery(hass).scan()
+            assert result["flows"] == [{"flow_id": "new-device"}]
+            assert result["warnings"] == ["部分路由器辨識逾時"]
+            scanner.async_scan.assert_awaited_once()
+            browse.assert_called_once()
+            browser.async_cancel.assert_awaited_once()
         # Register the real HA schema with its admin-only decorator.
         m.register_device_discovery(hass)
         assert "rexlite/discovery/scan" in hass.data["websocket_api"]

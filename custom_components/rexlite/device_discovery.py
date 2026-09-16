@@ -10,6 +10,11 @@ from time import monotonic
 from urllib.parse import urlsplit
 
 DATA_KEY = "rexlite_device_discovery"
+ROUTER_SEARCH_TYPES = (
+    "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+    "urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+)
+CALLBACK_SETUP_TIMEOUT = 2
 
 
 def local_origin(value: str) -> str:
@@ -96,12 +101,26 @@ class DeviceDiscovery:
                 if candidate:
                     candidates[candidate["id"]] = candidate
 
-        cancel, browser = None, None
+        cancels, browser = [], None
         try:
             async with asyncio.timeout(15):
                 scanner = self.hass.data.get("ssdp", {}).get(SSDP_SCANNER)
                 if scanner:
-                    cancel = await ssdp.async_register_callback(self.hass, found)
+                    # The HA callback API replays cached device descriptions before
+                    # registering. A broad match waits on unrelated/offline devices.
+                    # Limit Deco identification to gateway advertisements and never
+                    # let replay prevent native SSDP and mDNS probes from running.
+                    for search_type in ROUTER_SEARCH_TYPES:
+                        try:
+                            async with asyncio.timeout(CALLBACK_SETUP_TIMEOUT):
+                                cancels.append(
+                                    await ssdp.async_register_callback(
+                                        self.hass, found, {"ST": search_type}
+                                    )
+                                )
+                        except (TimeoutError, OSError):
+                            if "部分路由器辨識逾時" not in warnings:
+                                warnings.append("部分路由器辨識逾時")
                     receiving = True
                     await scanner.async_scan()
                 else:
@@ -120,7 +139,7 @@ class DeviceDiscovery:
             warnings.append("部分探索逾時，請稍後重試")
         finally:
             receiving = False
-            if cancel:
+            for cancel in cancels:
                 cancel()
             if browser:
                 await browser.async_cancel()

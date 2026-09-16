@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.19
+
+- Prevent stale SSDP cache entries from blocking active device searches.
+  Bound gateway callback setup independently, and keep native SSDP/mDNS scans
+  running when optional router identification is slow.
+- Verify discovery against HA 2026.6.0 and later published releases in CI.
+
 ## 0.1.18
 
 - Add administrator-only, bounded LAN discovery through `rexlite/discovery/scan`.

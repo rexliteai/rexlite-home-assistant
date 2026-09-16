@@ -22,3 +22,9 @@ Power alone is not network discoverability. Unprovisioned Wi-Fi devices need
 network setup; Zigbee and Matter need their appropriate pairing mode. Multicast
 blocked by a VLAN, client isolation or firewall cannot be discovered from this
 host. The scanner does not alter network security or open pairing windows.
+
+HA 2026.6.0 and later published releases are covered by the compatibility matrix.
+Use REXLiTE 0.1.19 or newer and restart HA after updating. Callback registration
+has an independent deadline because HA replays cached SSDP descriptions; stale
+router records must not prevent native discovery probes. The operations API uses
+25s (HA command), 30s (gateway) and 35s (browser) budgets around the bounded scan.
