@@ -58,6 +58,7 @@ REXLiTE AI `0.1.7` 新增單次上傳 ETS 工程檔流程：主機核對檔案�
 
 ## 功能
 
+- 網通設備流量來源管理：將 HA 既有速率實體或 SNMP 計數器送至 MAX’Is，以 Mbps 顯示。TP-Link、Deco、VIGI、Zyxel 的來源設定與型號限制見 [網通設備流量](docs/network-traffic.md)。
 - 提供 REXLiTE AI 雲端服務與即時服務狀態。
 - 服務暫時中斷時會自動恢復，減少人工處理。
 - 安全啟用資料失效時停止無效重試，並由 Home Assistant 引導重新驗證。

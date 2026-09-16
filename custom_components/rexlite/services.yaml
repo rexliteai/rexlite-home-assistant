@@ -1,0 +1,116 @@
+configure_network_traffic:
+  name: 設定網路流量來源
+  description: 將既有 HA 流量實體或 SNMP 位元組計數器連接到設備封包。設定儲存於此 HA 主機。
+  fields:
+    id:
+      name: 來源代號
+      required: true
+      example: zyxel_port_1
+      selector:
+        text:
+    name:
+      name: 顯示名稱
+      required: true
+      selector:
+        text:
+    provider:
+      name: 品牌
+      required: true
+      selector:
+        select:
+          options:
+            - tp_link
+            - vigi
+            - deco
+            - zyxel
+            - unifi
+            - generic
+    scope:
+      name: 量測範圍
+      description: device 為單一裝置，interface 為網路埠，router 為路由器總量。
+      required: true
+      selector:
+        select:
+          options:
+            - device
+            - interface
+            - router
+    device_id:
+      name: 對應裝置
+      description: 僅 device 範圍需要指定。
+      selector:
+        device:
+    mode:
+      name: 來源類型
+      required: true
+      selector:
+        select:
+          options:
+            - rate
+            - counter
+    unit:
+      name: 來源單位
+      description: rate 選實際速率單位，counter 使用 B（累計位元組）。
+      required: true
+      selector:
+        select:
+          options:
+            - bit/s
+            - kbit/s
+            - Mbit/s
+            - Mbps
+            - B/s
+            - kB/s
+            - MB/s
+            - KiB/s
+            - MiB/s
+            - B
+    rx_entity:
+      name: 接收實體
+      required: true
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+            - domain: device_tracker
+    tx_entity:
+      name: 傳送實體
+      required: true
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+            - domain: device_tracker
+    rx_attribute:
+      name: 接收屬性
+      description: 留白表示使用實體狀態。
+      selector:
+        text:
+    tx_attribute:
+      name: 傳送屬性
+      description: 留白表示使用實體狀態。
+      selector:
+        text:
+    discontinuity_entity:
+      name: 計數器重置標記
+      description: counter 必填，使用同一介面的 ifCounterDiscontinuityTime 實體。
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    uptime_entity:
+      name: 設備運作時間
+      description: counter 必填，使用 sysUpTime 實體偵測重啟。
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+remove_network_traffic:
+  name: 移除網路流量來源
+  description: 只移除此流量對應，不移除原本的 HA 實體。
+  fields:
+    id:
+      name: 來源代號
+      required: true
+      selector:
+        text:

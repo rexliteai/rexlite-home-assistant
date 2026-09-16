@@ -39,8 +39,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     from homeassistant.helpers.start import async_at_started
 
     from .knx_project_deployment import register_websocket_commands
+    from .network_traffic_api import async_register_network_traffic
 
     deployer = register_websocket_commands(hass)
+    await async_register_network_traffic(hass)
 
     async def recover_interrupted_deployment(_hass: HomeAssistant) -> None:
         await deployer.recover()

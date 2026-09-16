@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.16
+
+- Add administrator-managed network traffic sources for existing Home Assistant
+  rate entities/attributes and SNMP byte counters. Provider labels include
+  TP-Link, VIGI, Deco, Zyxel, UniFi and generic devices; actual support depends
+  on the device model, firmware and installed HA source integration.
+- Expose a read-only, versioned `rexlite/network_traffic` WebSocket response
+  for the operations backend. Keep device, interface and router scopes separate;
+  credentials and arbitrary source attributes never enter this response.
+- Persist source configuration locally through administrator-only actions.
+  Protect against failed writes, stale readings, counter resets, reboots and
+  duplicate samples. Counter rates are sampling-interval averages.
+- Add real HA service, storage and WebSocket checks to the HA 2026.1–2026.9
+  compatibility matrix. See `docs/network-traffic.md` for setup examples.
+- Includes the previously merged KNX improvements documented in 0.1.13–0.1.15.
+  Upgrading requires a full Home Assistant restart; network sources must be
+  configured separately and the corresponding operations backend/frontend
+  must support the new response.
+
 ## 0.1.15
 
 - Fix: the installer `<unit>-Climate-*` dialect added in 0.1.14 emitted
