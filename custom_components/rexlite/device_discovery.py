@@ -62,6 +62,96 @@ def deco_candidate(info, configured_hosts: set[str]) -> dict | None:
     }
 
 
+def discovery_endpoint(info) -> tuple[str, int] | None:
+    """Probe only the advertised LAN service, never guessed ports or subnets."""
+    location = getattr(info, "ssdp_location", None)
+    if location:
+        origin = local_origin(location)
+        if not origin:
+            return None
+        url = urlsplit(origin)
+        return url.hostname, url.port or (443 if url.scheme == "https" else 80)
+    if "._tcp." not in str(getattr(info, "type", "")):
+        return None
+    host, port = str(getattr(info, "host", "")), getattr(info, "port", None)
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        return None
+    origin = local_origin(
+        f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
+    )
+    return (host, port) if origin else None
+
+
+async def endpoint_online(host: str, port: int) -> bool:
+    """A new TCP handshake; cached announcements are not liveness evidence."""
+    writer = None
+    try:
+        async with asyncio.timeout(1.5):
+            _, writer = await asyncio.open_connection(host, port)
+            return True
+    except (TimeoutError, OSError):
+        return False
+    finally:
+        if writer:
+            writer.close()
+            try:
+                async with asyncio.timeout(0.2):
+                    await writer.wait_closed()
+            except (TimeoutError, OSError):
+                pass
+
+
+async def online_discovery_flows(hass) -> list[dict]:
+    from homeassistant.helpers.service_info.ssdp import SsdpServiceInfo
+    from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
+
+    manager = hass.config_entries.flow
+    targets = {}
+    for info_type in (SsdpServiceInfo, ZeroconfServiceInfo):
+        observations = []
+        manager.async_progress_by_init_data_type(
+            info_type,
+            lambda info, observations=observations: observations.append(info) is None,
+        )
+        for info in observations:
+            endpoint = discovery_endpoint(info)
+            if endpoint is None or (endpoint not in targets and len(targets) >= 128):
+                continue
+            matches = manager.async_progress_by_init_data_type(
+                info_type, lambda other, info=info: other is info
+            )
+            targets.setdefault(endpoint, {}).update(
+                (flow["flow_id"], flow)
+                for flow in matches
+                if flow.get("context", {}).get("source") in {"ssdp", "zeroconf"}
+            )
+    semaphore = asyncio.Semaphore(16)
+    verified = {}
+
+    async def check(endpoint, flows):
+        async with semaphore:
+            if await endpoint_online(*endpoint):
+                for flow_id, flow in flows.items():
+                    verified[flow_id] = {
+                        **flow,
+                        "context": {
+                            **flow.get("context", {}),
+                            "rexlite_online": True,
+                            "rexlite_seen_at": datetime.now(UTC).isoformat(),
+                        },
+                    }
+
+    try:
+        async with asyncio.timeout(6):
+            async with asyncio.TaskGroup() as group:
+                for endpoint, flows in targets.items():
+                    group.create_task(check(endpoint, flows))
+    except TimeoutError:
+        pass  # Keep only completed positive checks; never resurrect cached flows.
+    active = {flow["flow_id"] for flow in manager.async_progress()}
+    return [flow for key, flow in verified.items() if key in active]
+
+
 class DeviceDiscovery:
     def __init__(self, hass):
         self.hass = hass
@@ -151,10 +241,13 @@ class DeviceDiscovery:
                 installed = False
             for candidate in candidates.values():
                 candidate["installed"] = installed
-        flows = self.hass.config_entries.flow.async_progress()
+        flows = await online_discovery_flows(self.hass)
         return {
             "flows": flows,
-            "candidates": list(candidates.values()),
+            "candidates": [
+                {**c, "online": True, "seenAt": datetime.now(UTC).isoformat()}
+                for c in candidates.values()
+            ],
             "warnings": warnings,
             "scannedAt": datetime.now(UTC).isoformat(),
         }

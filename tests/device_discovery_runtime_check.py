@@ -22,7 +22,10 @@ async def main():
         hass = HomeAssistant(directory)
         hass.config_entries = SimpleNamespace(
             async_entries=lambda domain: [],
-            flow=SimpleNamespace(async_progress=lambda: [{"flow_id": "new-device"}]),
+            flow=SimpleNamespace(
+                async_progress=lambda: [{"flow_id": "cached-device"}],
+                async_progress_by_init_data_type=lambda *args: [],
+            ),
         )
         callback = None
         remove = Mock()
@@ -55,7 +58,7 @@ async def main():
             manager = m.DeviceDiscovery(hass)
             results = await asyncio.gather(manager.scan(), manager.scan())
             assert results[0] == results[1]
-            assert results[0]["flows"] == [{"flow_id": "new-device"}]
+            assert results[0]["flows"] == []
             assert results[0]["candidates"][0]["host"] == "http://192.168.68.1"
             assert results[0]["candidates"][0]["installed"] is True
             scanner.async_scan.assert_awaited_once()
@@ -86,11 +89,61 @@ async def main():
             ) as browse,
         ):
             result = await m.DeviceDiscovery(hass).scan()
-            assert result["flows"] == [{"flow_id": "new-device"}]
+            assert result["flows"] == []
             assert result["warnings"] == ["部分路由器辨識逾時"]
             scanner.async_scan.assert_awaited_once()
             browse.assert_called_once()
             browser.async_cancel.assert_awaited_once()
+        # Only a fresh connection to the service endpoint verifies a pending flow.
+        from ipaddress import ip_address
+
+        from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
+
+        online = ZeroconfServiceInfo(
+            ip_address=ip_address("192.168.1.10"),
+            ip_addresses=[ip_address("192.168.1.10")],
+            port=8009,
+            hostname="tv.local.",
+            type="_googlecast._tcp.local.",
+            name="TV",
+            properties={},
+        )
+        offline = ZeroconfServiceInfo(
+            ip_address=ip_address("192.168.1.11"),
+            ip_addresses=[ip_address("192.168.1.11")],
+            port=8009,
+            hostname="old.local.",
+            type="_googlecast._tcp.local.",
+            name="Old TV",
+            properties={},
+        )
+        records = [
+            (online, {"flow_id": "online", "context": {"source": "zeroconf"}}),
+            (offline, {"flow_id": "offline", "context": {"source": "zeroconf"}}),
+        ]
+
+        def match(kind, predicate):
+            return [
+                flow
+                for info, flow in records
+                if isinstance(info, kind) and predicate(info)
+            ]
+
+        hass.config_entries.flow = SimpleNamespace(
+            async_progress=lambda: [flow for _, flow in records],
+            async_progress_by_init_data_type=match,
+        )
+        with patch.object(
+            m,
+            "endpoint_online",
+            AsyncMock(side_effect=lambda host, port: host == "192.168.1.10"),
+        ):
+            live = await m.online_discovery_flows(hass)
+            assert [flow["flow_id"] for flow in live] == ["online"]
+            assert live[0]["context"]["rexlite_online"] is True
+            assert "rexlite_seen_at" in live[0]["context"]
+            assert "rexlite_online" not in records[0][1]["context"]
+        assert m.discovery_endpoint(online) == ("192.168.1.10", 8009)
         # Register the real HA schema with its admin-only decorator.
         m.register_device_discovery(hass)
         assert "rexlite/discovery/scan" in hass.data["websocket_api"]

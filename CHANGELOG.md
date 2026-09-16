@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.20
+
+- 待加入設備只回傳通過本次 LAN 服務連線檢查的 SSDP / mDNS 項目；不再將歷史探索紀錄、USB 或未知狀態當成在線網路設備。
+- 連線檢查限制於探索封包提供的私有 IP 與服務埠，限制併發、總時間並自動關閉連線；不變更或刪除 HA 原有設定流程。
+- 回傳在線確認時間，供介面過期後隱藏及同步計數。
+
 ## 0.1.19
 
 - Prevent stale SSDP cache entries from blocking active device searches.

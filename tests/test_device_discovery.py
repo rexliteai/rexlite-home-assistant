@@ -5,7 +5,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
 PATH = Path(__file__).parents[1] / "custom_components/rexlite/device_discovery.py"
 spec = importlib.util.spec_from_file_location("device_discovery_test", PATH)
@@ -49,6 +49,48 @@ class CandidateTests(unittest.TestCase):
             "http://224.0.0.1",
         ):
             self.assertEqual(m.local_origin(value), "")
+
+
+class EndpointTests(unittest.TestCase):
+    def test_only_local_advertised_tcp_services_are_probed(self):
+        self.assertEqual(m.discovery_endpoint(info()), ("192.168.68.1", 1900))
+        for host in (
+            "8.8.8.8",
+            "127.0.0.1",
+            "169.254.169.254",
+            "router.local",
+            "0.0.0.0",
+        ):
+            self.assertIsNone(
+                m.discovery_endpoint(
+                    SimpleNamespace(type="_http._tcp.local.", host=host, port=80)
+                )
+            )
+        self.assertIsNone(
+            m.discovery_endpoint(
+                SimpleNamespace(
+                    type="_service._udp.local.", host="192.168.1.2", port=9999
+                )
+            )
+        )
+        self.assertIsNone(
+            m.discovery_endpoint(
+                SimpleNamespace(type="_http._tcp.local.", host="192.168.1.2", port=0)
+            )
+        )
+
+
+class ConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_success_closes_connection_and_failure_is_not_online(self):
+        writer = SimpleNamespace(close=Mock(), wait_closed=AsyncMock())
+        with patch.object(
+            asyncio, "open_connection", AsyncMock(return_value=(None, writer))
+        ):
+            self.assertTrue(await m.endpoint_online("192.168.1.2", 80))
+            writer.close.assert_called_once()
+            writer.wait_closed.assert_awaited_once()
+        with patch.object(asyncio, "open_connection", AsyncMock(side_effect=OSError())):
+            self.assertFalse(await m.endpoint_online("192.168.1.2", 80))
 
 
 class ScanTests(unittest.IsolatedAsyncioTestCase):
