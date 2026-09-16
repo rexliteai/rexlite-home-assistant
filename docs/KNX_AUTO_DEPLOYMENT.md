@@ -99,3 +99,21 @@ address lacks a safe standalone mapping and the scene address lacks an explicit
 scene number. These are reported as skipped rather than inferred. A complete
 41-entity mapping requires the corresponding ETS metadata; it is not inferred
 from another host's manually named YAML files.
+
+## ETS Function members (REXLiTE KNX Contract v1)
+
+ETS Functions are the preferred mapping source. Members with a standard ETS
+DatapointRole (`SwitchOnOff`, `InfoOnOff`, `DimmingValue`, `InfoDimmingValue`,
+`MoveUpDown`, `StopStepUpDown`, `CurrentAbsolutePosition…Percentage`,
+`TempRoom`, `HVACMode`, …) map by role. ETS has no standard role for colour
+temperature, absolute blind position, slat angle or air-conditioner
+mode/fan/setpoint, so such members may leave the role empty and use the exact
+name `<Function name> <suffix>` (`色溫`, `色溫狀態`, `位置`, `葉片角度`, `模式`,
+`風速`, `設定溫度`, `設定溫度狀態`, `室溫`, `運轉模式狀態`, …). The prefix must equal
+the Function's own name and the exact-DPT guard still applies.
+
+Unmapped Function members report a specific reason: `function_role_not_exposed`
+for standard roles that are never an HA entity field (e.g. `DimmingControl`
+relative dimming) and `unresolved_function_role` for members with neither a
+supported role nor a matching name. The full producer-side specification lives
+in the `rexlite-ets-addin` repository (`contract/knx-contract-v1.md`).
