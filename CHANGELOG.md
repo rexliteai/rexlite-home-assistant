@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.17
+
+- Add Fortinet as a managed HA traffic source provider. Interface SNMP
+  counters remain interface-scoped and are never presented as per-client traffic.
+
+- Fix the cloud-service device's firmware label, which remained at 0.1.13
+  after installing newer releases. Add a release regression check to keep
+  the device version and integration manifest in sync.
+- Clarify that installing REXLiTE does not install or authenticate a router
+  integration. Per-client traffic needs the router's HA integration or an
+  explicitly configured network traffic source. Restart HA after updating.
+
 ## 0.1.16
 
 - Add administrator-managed network traffic sources for existing Home Assistant

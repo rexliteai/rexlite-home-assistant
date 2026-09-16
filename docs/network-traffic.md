@@ -4,12 +4,17 @@
 
 ## 接入方式
 
+升級 REXLiTE 版本不會自動連接 Deco。若所有裝置都顯示「未提供流量」，先在**同一台 HA** 的「設定 → 裝置與服務」確認已新增並連接 `TP-Link Deco`，再確認其用戶端 tracker 有 `down_kilobytes_per_s`／`up_kilobytes_per_s`。只有 HACS 下載完成、REXLiTE 雲端已連線，或裝置能被控制，都不代表流量來源已存在。請將路由器密碼直接輸入 HA 整合設定，不要輸入營運前端。
+
+0.1.16 的裝置韌體標籤誤留為 0.1.13；0.1.17 已修正。該標籤與缺少路由器來源是兩個獨立問題。
+
 | 品牌／系列 | 資料來源 | 設定方式與限制 |
 | --- | --- | --- |
 | TP-Link Deco | `tplink_deco` client tracker 速率屬性 | 既有後端 adapter 自動讀取；也可明確指定 HA 來源。需要 Deco 自訂整合與支援的本機 API。 |
 | TP-Link 路由器／Omada | 已安裝整合所提供的速率 sensor／屬性，或 SNMP | 必須確認每個來源的實際單位；不能把 Wi-Fi 協商速度當成流量。HA 原生 Omada 不保證提供每個 client 的速率。 |
 | VIGI | 支援 SNMP 的攝影機／NVR，或其交換器埠計數器 | 以型號／韌體與可用 MIB 為準；ONVIF／RTSP 本身不等於全機流量。交換器埠需使用 interface 範圍。 |
 | Zyxel | SNMP IF-MIB 計數器 | 由原生 HA SNMP sensor 採集，不將 SNMP 密碼送到雲端。非管理型交換器不保證可用。 |
+| Fortinet | 既有 HA 流量來源或 SNMP 介面計數器 | 網路埠統計只代表該介面。逐台裝置需另有能提供 client 統計的來源，不能把 WAN 總量分配給每台。 |
 | UniFi／其他設備 | 已有 HA 速率或 SNMP 統計 | 既有 UniFi adapter 保留；其他來源可透過同一管理員動作設定。 |
 
 裝置 `device`、介面／埠 `interface`、路由器總量 `router` 分別處理。只有 device 範圍可填入 HA device_id 並合併到原裝置卡片；另外兩種範圍為獨立卡片，不套用「每台裝置」的警示門檻。網路埠 RX/TX 顯示接收／傳送，不能直接認定為終端裝置下載／上傳。

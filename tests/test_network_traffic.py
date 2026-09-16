@@ -41,6 +41,15 @@ def states(rx="100", tx="200", stamp=1000, reset="0", uptime=None):
 
 
 class TrafficTests(unittest.TestCase):
+    def test_fortinet_source_preserves_interface_scope(self):
+        sampler = m.TrafficSampler()
+        config = channel(provider="fortinet")
+        sampler.sample(config, states(), 1000)
+        result = sampler.sample(config, states("1250100", "125200", 1010), 1010)
+        self.assertEqual(result["provider"], "fortinet")
+        self.assertEqual(result["scope"], "interface")
+        self.assertEqual(result["rxBitsPerSecond"], 1_000_000)
+
     def test_counter_interval_and_duplicate_read(self):
         sampler = m.TrafficSampler()
         self.assertEqual(

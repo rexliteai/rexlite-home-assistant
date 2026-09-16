@@ -6,7 +6,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-PROVIDERS = ("tp_link", "vigi", "deco", "zyxel", "unifi", "generic")
+PROVIDERS = ("tp_link", "vigi", "deco", "zyxel", "fortinet", "unifi", "generic")
 RATE_UNITS = {
     "bit/s": 1,
     "kbit/s": 1000,

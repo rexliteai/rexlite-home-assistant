@@ -23,6 +23,7 @@ configure_network_traffic:
             - vigi
             - deco
             - zyxel
+            - fortinet
             - unifi
             - generic
     scope:
