@@ -127,6 +127,155 @@ def independent_units(base, unit_roles, count=3):
     return project(*groups, objects=objects), table
 
 
+# Room temperature plus setpoint command/feedback, as used on real exports.
+CLIMATE_TEMPERATURES = [
+    ("Climate-VAL", 9, 1),
+    ("Climate-VAL-FB", 9, 1),
+    ("Climate-VAL-REAL-FB", 9, 1),
+]
+
+
+# REXLiTE KNX Contract v1 loops: (function type, function name, members).
+# Each member is (name suffix, DPT, standard ETS role or "", is feedback).
+CONTRACT_V1_LOOPS = [
+    (
+        "FT-1",
+        "1F-玄關-崁燈1",
+        [("開關", (1, 1), "SwitchOnOff", False), ("狀態", (1, 1), "InfoOnOff", True)],
+    ),
+    (
+        "FT-6",
+        "1F-客廳-吊燈1",
+        [
+            ("開關", (1, 1), "SwitchOnOff", False),
+            ("狀態", (1, 1), "InfoOnOff", True),
+            ("亮度", (5, 1), "DimmingValue", False),
+            ("亮度狀態", (5, 1), "InfoDimmingValue", True),
+            ("相對調光", (3, 7), "DimmingControl", False),
+        ],
+    ),
+    (
+        "FT-6",
+        "1F-客廳-線燈1",
+        [
+            ("開關", (1, 1), "SwitchOnOff", False),
+            ("狀態", (1, 1), "InfoOnOff", True),
+            ("亮度", (5, 1), "DimmingValue", False),
+            ("亮度狀態", (5, 1), "InfoDimmingValue", True),
+            ("色溫", (7, 600), "", False),
+            ("色溫狀態", (7, 600), "", True),
+        ],
+    ),
+    (
+        "FT-6",
+        "2F-主臥-崁燈1",
+        [
+            ("開關", (1, 1), "SwitchOnOff", False),
+            ("亮度", (5, 1), "DimmingValue", False),
+            ("色溫", (5, 1), "", False),
+            ("色溫狀態", (5, 1), "", True),
+        ],
+    ),
+    (
+        "FT-10",
+        "2F-主臥-插座1",
+        [("開關", (1, 1), "SwitchOnOff", False), ("狀態", (1, 1), "InfoOnOff", True)],
+    ),
+    (
+        "FT-7",
+        "1F-客廳-窗簾1",
+        [
+            ("上下", (1, 8), "MoveUpDown", False),
+            ("停止/微調", (1, 7), "StopStepUpDown", False),
+            ("位置", (5, 1), "", False),
+            ("位置狀態", (5, 1), "CurrentAbsolutePositionBlindsPercentage", True),
+        ],
+    ),
+    (
+        "FT-7",
+        "2F-主臥-百葉1",
+        [
+            ("上下", (1, 8), "MoveUpDown", False),
+            ("停止/微調", (1, 7), "StopStepUpDown", False),
+            ("位置", (5, 1), "", False),
+            ("位置狀態", (5, 1), "CurrentAbsolutePositionBlindsPercentage", True),
+            ("葉片角度", (5, 1), "", False),
+            ("葉片角度狀態", (5, 1), "CurrentAbsolutePositionSlatPercentage", True),
+        ],
+    ),
+    (
+        "FT-0",
+        "1F-客廳-冷氣1",
+        [
+            ("開關", (1, 1), "", False),
+            ("狀態", (1, 1), "", True),
+            ("模式", (20, 105), "", False),
+            ("模式狀態", (20, 105), "", True),
+            ("風速", (5, 1), "", False),
+            ("風速狀態", (5, 1), "", True),
+            ("設定溫度", (9, 1), "", False),
+            ("設定溫度狀態", (9, 1), "", True),
+            ("室溫", (9, 1), "", True),
+        ],
+    ),
+    (
+        "FT-9",
+        "2F-浴室-地暖1",
+        [
+            ("室溫", (9, 1), "TempRoom", True),
+            ("設定溫度", (9, 1), "", False),
+            ("設定溫度狀態", (9, 1), "", True),
+            ("運轉模式", (20, 102), "HVACMode", False),
+            ("運轉模式狀態", (20, 102), "", True),
+        ],
+    ),
+]
+
+
+def contract_v1_project():
+    """Synthetic xknxproject output shaped like a Contract v1 ETS6 export."""
+    groups, objects, functions, table = [], {}, {}, {}
+    for loop, (kind, name, members) in enumerate(CONTRACT_V1_LOOPS, start=1):
+        device = f"1.1.{loop}"
+        refs = {}
+        for offset, (suffix, (main, sub), role, feedback) in enumerate(members):
+            address = f"{loop}/1/{offset}"
+            groups.append(ga(address, f"{name} {suffix}", main, sub))
+            objects[f"{device}/O-{offset}"] = {
+                "device_address": device,
+                "channel": "CH-1",
+                "text": suffix,
+                "dpts": [{"main": main, "sub": sub}],
+                "flags": {
+                    "communication": True,
+                    "read": feedback,
+                    "write": not feedback,
+                    "transmit": feedback,
+                },
+                "group_address_links": [address],
+            }
+            refs[address] = {"address": address, "name": "", "role": role}
+            table[(name, suffix)] = address
+        functions[f"F-{loop}"] = {
+            "name": name,
+            "function_type": kind,
+            "group_addresses": refs,
+        }
+    for suffix, dpt in (("溫度", (9, 1)), ("照度", (9, 4)), ("人體感應", (1, 18))):
+        address = f"6/1/{len(table)}"
+        groups.append(ga(address, f"1F-客廳-感測器 {suffix}", *dpt))
+        objects[f"1.1.99/O-{suffix}"] = {
+            "device_address": "1.1.99",
+            "channel": "CH-1",
+            "text": suffix,
+            "dpts": [{"main": dpt[0], "sub": dpt[1]}],
+            "flags": {"communication": True, "read": True, "transmit": True},
+            "group_address_links": [address],
+        }
+        table[("1F-客廳-感測器", suffix)] = address
+    return project(*groups, functions=functions, objects=objects), table
+
+
 def has_ha_distribution():
     try:
         importlib.metadata.version("homeassistant")
@@ -422,7 +571,7 @@ class KNXProjectMappingTests(unittest.TestCase):
         self.assertEqual(len(switches), 1)
         self.assertEqual(switches[0]["address"], table[(2, "SW")])
 
-    def test_climate_dialect_maps_on_off_mode_and_fan(self):
+    def test_climate_dialect_maps_on_off_mode_fan_and_temperatures(self):
         p, table = independent_units(
             "13F-A12",
             [
@@ -432,6 +581,7 @@ class KNXProjectMappingTests(unittest.TestCase):
                 ("Climate-MODE-FB", 20, 105),
                 ("Climate-FAN", 5, 1),
                 ("Climate-FAN-FB", 5, 1),
+                *CLIMATE_TEMPERATURES,
             ],
             count=1,
         )
@@ -448,7 +598,50 @@ class KNXProjectMappingTests(unittest.TestCase):
         self.assertEqual(
             climate["fan_speed_state_address"], table[(1, "Climate-FAN-FB")]
         )
-        self.assertNotIn("temperature_address", climate)
+        self.assertEqual(
+            climate["temperature_address"], table[(1, "Climate-VAL-REAL-FB")]
+        )
+        self.assertEqual(
+            climate["target_temperature_address"], table[(1, "Climate-VAL")]
+        )
+        self.assertEqual(
+            climate["target_temperature_state_address"],
+            table[(1, "Climate-VAL-FB")],
+        )
+
+    def test_climate_dialect_without_temperatures_never_emits_invalid_climate(self):
+        # HA's KNX schema requires temperature_address and
+        # target_temperature_state_address; one invalid climate row would make
+        # the whole deployment fail schema validation.
+        p, table = independent_units(
+            "13F-A12",
+            [
+                ("Climate-SW", 1, 1),
+                ("Climate-MODE", 20, 105),
+                ("Climate-FAN", 5, 1),
+                ("Climate-VAL-FB", 9, 1),
+            ],
+            count=1,
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("climate", result["config"])
+        self.assertEqual(
+            result["config"]["switch"][0]["address"], table[(1, "Climate-SW")]
+        )
+
+    def test_climate_dialect_byte_count_value_is_not_a_setpoint(self):
+        p, _ = independent_units(
+            "13F-A12",
+            [
+                ("Climate-SW", 1, 1),
+                ("Climate-MODE", 20, 105),
+                ("Climate-VAL", 5, 10),
+                ("Climate-VAL-FB", 5, 10),
+                ("Climate-VAL-REAL-FB", 9, 1),
+            ],
+            count=1,
+        )
+        self.assertNotIn("climate", mapper.plan_project(p)["config"])
 
     def test_climate_dialect_without_mode_or_fan_falls_back_to_plain_switch(self):
         # A bare on/off pair is not distinctly a climate device; do not
@@ -466,7 +659,12 @@ class KNXProjectMappingTests(unittest.TestCase):
         # the entity, even though the proven mode channel still forms one.
         p, table = independent_units(
             "13F-A12",
-            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105), ("Climate-FAN", 5, 10)],
+            [
+                ("Climate-SW", 1, 1),
+                ("Climate-MODE", 20, 105),
+                ("Climate-FAN", 5, 10),
+                *CLIMATE_TEMPERATURES,
+            ],
             count=1,
         )
         result = mapper.plan_project(p)
@@ -481,7 +679,7 @@ class KNXProjectMappingTests(unittest.TestCase):
     def test_multiple_climate_units_share_one_prefix_split_by_proven_channel(self):
         p, table = independent_units(
             "13F-A12",
-            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105)],
+            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105), *CLIMATE_TEMPERATURES],
             count=2,
         )
         result = mapper.plan_project(p)
@@ -720,6 +918,124 @@ class KNXProjectMappingTests(unittest.TestCase):
         self.assertNotIn("state_address", result["config"]["light"][0])
         self.assertEqual(result["config"]["binary_sensor"][0]["state_address"], "1/0/2")
 
+    def test_contract_v1_home_maps_every_loop_without_unexpected_skips(self):
+        p, table = contract_v1_project()
+        result = mapper.plan_project(p)
+        by_name = {e["name"]: e for e in result["entities"]}
+        self.assertEqual(
+            {name: by_name[name]["platform"] for _, name, _ in CONTRACT_V1_LOOPS},
+            {
+                "1F-玄關-崁燈1": "light",
+                "1F-客廳-吊燈1": "light",
+                "1F-客廳-線燈1": "light",
+                "2F-主臥-崁燈1": "light",
+                "2F-主臥-插座1": "switch",
+                "1F-客廳-窗簾1": "cover",
+                "2F-主臥-百葉1": "cover",
+                "1F-客廳-冷氣1": "climate",
+                "2F-浴室-地暖1": "climate",
+            },
+        )
+        self.assertTrue(
+            all(
+                by_name[name]["source"] == "ets-function-role"
+                for _, name, _ in CONTRACT_V1_LOOPS
+            )
+        )
+        # Only the deliberately non-entity relative-dimming address is left.
+        self.assertEqual(
+            result["skipped"],
+            [
+                {
+                    "address": table[("1F-客廳-吊燈1", "相對調光")],
+                    "reason": "function_role_not_exposed",
+                }
+            ],
+        )
+        lights = {row["name"]: row for row in result["config"]["light"]}
+        self.assertEqual(lights["1F-客廳-線燈1"]["color_temperature_mode"], "absolute")
+        self.assertEqual(
+            lights["1F-客廳-線燈1"]["color_temperature_state_address"],
+            table[("1F-客廳-線燈1", "色溫狀態")],
+        )
+        self.assertEqual(lights["2F-主臥-崁燈1"]["color_temperature_mode"], "relative")
+        cover = {row["name"]: row for row in result["config"]["cover"]}["2F-主臥-百葉1"]
+        self.assertEqual(cover["position_address"], table[("2F-主臥-百葉1", "位置")])
+        self.assertEqual(cover["angle_address"], table[("2F-主臥-百葉1", "葉片角度")])
+        climates = {row["name"]: row for row in result["config"]["climate"]}
+        aircon = climates["1F-客廳-冷氣1"]
+        self.assertEqual(aircon["on_off_address"], table[("1F-客廳-冷氣1", "開關")])
+        self.assertEqual(
+            aircon["controller_mode_address"], table[("1F-客廳-冷氣1", "模式")]
+        )
+        self.assertEqual(
+            aircon["temperature_address"], table[("1F-客廳-冷氣1", "室溫")]
+        )
+        heating = climates["2F-浴室-地暖1"]
+        self.assertEqual(
+            heating["operation_mode_address"], table[("2F-浴室-地暖1", "運轉模式")]
+        )
+        self.assertEqual(
+            heating["target_temperature_state_address"],
+            table[("2F-浴室-地暖1", "設定溫度狀態")],
+        )
+        sensors = {row["name"] for row in result["config"]["sensor"]}
+        self.assertLessEqual({"1F-客廳-感測器 溫度", "1F-客廳-感測器 照度"}, sensors)
+
+    def test_function_member_name_must_share_the_function_prefix(self):
+        p, table = contract_v1_project()
+        position = table[("1F-客廳-窗簾1", "位置")]
+        p["group_addresses"][position]["name"] = "1F-客廳-窗簾2 位置"
+        result = mapper.plan_project(p)
+        cover = {row["name"]: row for row in result["config"]["cover"]}["1F-客廳-窗簾1"]
+        self.assertNotIn("position_address", cover)
+        self.assertNotIn(
+            position, {a for e in result["entities"] for a in e["addresses"]}
+        )
+
+    def test_function_member_without_role_or_convention_is_reported(self):
+        p, table = contract_v1_project()
+        address = table[("1F-客廳-冷氣1", "風速")]
+        p["group_addresses"][address]["name"] = "Fan level"
+        result = mapper.plan_project(p)
+        self.assertIn(
+            {"address": address, "reason": "unresolved_function_role"},
+            result["skipped"],
+        )
+        self.assertNotIn(
+            "fan_speed_address",
+            {row["name"]: row for row in result["config"]["climate"]}["1F-客廳-冷氣1"],
+        )
+
+    def test_function_colour_temperature_feedback_must_match_command_encoding(self):
+        p, table = contract_v1_project()
+        state = table[("1F-客廳-線燈1", "色溫狀態")]
+        p["group_addresses"][state]["dpt"] = {"main": 5, "sub": 1}
+        p["communication_objects"]["1.1.3/O-5"]["dpts"] = [{"main": 5, "sub": 1}]
+        result = mapper.plan_project(p)
+        self.assertNotIn("1F-客廳-線燈1", {e["name"] for e in result["entities"]})
+        self.assertIn(
+            {"address": state, "reason": "role_datapoint_type_mismatch"},
+            result["skipped"],
+        )
+
+    def test_colour_temperature_on_a_non_light_function_is_not_a_switch(self):
+        p = project(
+            ga("1/0/1", "Relay 開關", 1, 1),
+            ga("1/0/2", "Relay 色溫", 7, 600),
+            functions={
+                "F1": {
+                    "name": "Relay",
+                    "function_type": "FT-10",
+                    "group_addresses": {
+                        "1/0/1": {"address": "1/0/1", "role": "SwitchOnOff"},
+                        "1/0/2": {"address": "1/0/2", "role": ""},
+                    },
+                }
+            },
+        )
+        self.assertNotIn("switch", mapper.plan_project(p)["config"])
+
     def test_formal_ets_function_roles_are_preferred_to_names(self):
         p = project(
             ga("1/0/1", "A", 1, 1),
@@ -938,6 +1254,17 @@ class KNXProjectMappingTests(unittest.TestCase):
                 ga("5/0/3", "AC 目標溫度狀態", 9, 1),
             ),
             project(ga("4/0/1", "Scene bus", 18, 1), functions={"S1": scene}),
+            contract_v1_project()[0],
+            independent_units(
+                "13F-A12",
+                [
+                    ("Climate-SW", 1, 1),
+                    ("Climate-MODE", 20, 105),
+                    ("Climate-FAN", 5, 1),
+                    *CLIMATE_TEMPERATURES,
+                ],
+                count=2,
+            )[0],
             project(ga("6/0/1", "Relay switch", 1, 1)),
             project(ga("6/0/2", "Status", 1, 11)),
         ]

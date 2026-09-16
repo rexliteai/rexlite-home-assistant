@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.15
+
+- Fix: the installer `<unit>-Climate-*` dialect added in 0.1.14 emitted
+  `climate` rows without `temperature_address` /
+  `target_temperature_state_address`. Home Assistant's KNX schema requires
+  both, so a single such row made the whole deployment fail schema
+  validation (reproduced on a real 25-project corpus with HA 2026.9.1). The
+  dialect now also recognises `-Climate-VAL` (DPT 9.001 setpoint),
+  `-Climate-VAL-FB` (setpoint feedback) and `-Climate-VAL-REAL-FB` (room
+  temperature) and only emits a climate entity when both required
+  temperature addresses are proven on the same channel; otherwise the
+  command addresses keep their plain fallbacks.
+- Map ETS Function members that have no standard ETS DatapointRole by the
+  exact `<Function name> <suffix>` convention (prefix must equal the Function
+  name, exact DPT still required). This supports colour temperature
+  (`色溫`/`色溫狀態`, DPT 7.600 absolute or 5.001 relative), absolute blind
+  position and slat angle, and air-conditioner Functions (`FT-0`) with
+  on/off, mode, fan speed, setpoint and room temperature.
+- Map the standard `HVACMode` role (DPT 20.102) to `operation_mode_address`,
+  add `運轉模式`/`運轉模式狀態` labels, and treat heating
+  Function types `FT-4`/`FT-5`/`FT-9` as climate.
+- Report unmapped Function members as `function_role_not_exposed` (standard
+  non-entity roles such as `DimmingControl`) or `unresolved_function_role`
+  instead of the generic `insufficient_supported_entity_metadata`.
+- Bump the mapping revision (now 7) so imported projects are re-planned.
+
 ## 0.1.14
 
 - Split several distinct actuator outputs (e.g. multiple DALI circuits, or

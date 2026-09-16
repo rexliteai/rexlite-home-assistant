@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 6
+MAPPER_REVISION = 7
 
 # role: (YAML field, allowed exact DPTs). Names here are semantic roles, not GA
 # names. Standard ETS roles include AbsoluteSetvalueControl/ActualDimmingValue.
@@ -38,6 +38,8 @@ ROLE_FIELDS = {
     "currentabsolutepositionblindspercentage": ("position_state_address", {(5, 1)}),
     "positionstate": ("position_state_address", {(5, 1)}),
     "angle": ("angle_address", {(5, 1)}),
+    "colortemperature": ("color_temperature_address", {(7, 600), (5, 1)}),
+    "colortemperaturestate": ("color_temperature_state_address", {(7, 600), (5, 1)}),
     "currentabsolutepositionslatpercentage": ("angle_state_address", {(5, 1)}),
     "temproom": ("temperature_address", {(9, 1)}),
     "temperature": ("temperature_address", {(9, 1)}),
@@ -47,6 +49,7 @@ ROLE_FIELDS = {
     "controllermodestate": ("controller_mode_state_address", {(20, 105)}),
     "operationmode": ("operation_mode_address", {(20, 102)}),
     "operationmodestate": ("operation_mode_state_address", {(20, 102)}),
+    "hvacmode": ("operation_mode_address", {(20, 102)}),
     "fanspeed": ("fan_speed_address", {(5, 1)}),
     "fanspeedstate": ("fan_speed_state_address", {(5, 1)}),
     "scene": ("address", {(17, 1), (18, 1)}),
@@ -65,6 +68,12 @@ ROLE_FIELDS = {
 # Chinese "指令"/"亮度指令") is the other common English convention alongside
 # "開關"/"狀態"; a role datapoint-type mismatch still blocks the whole prefix.
 NAME_ROLES = {
+    "色溫狀態": "colortemperaturestate",
+    "色溫": "colortemperature",
+    "葉片角度狀態": "currentabsolutepositionslatpercentage",
+    "葉片角度": "angle",
+    "運轉模式狀態": "operationmodestate",
+    "運轉模式": "operationmode",
     "亮度狀態": "actualdimmingvalue",
     "brightness status": "actualdimmingvalue",
     "亮度指令": "absolutesetvaluecontrol",
@@ -110,6 +119,18 @@ NAME_ROLES = {
     "風速": "fanspeed",
 }
 
+# Standard ETS DatapointRoles that are real bus functions but never a Home
+# Assistant entity field (e.g. relative dimming for wall buttons). Unmapped
+# members with these roles are reported distinctly from unresolved metadata.
+NON_ENTITY_FUNCTION_ROLES = {
+    "dimmingcontrol",
+    "windalarm",
+    "rainalarm",
+    "valveposition",
+    "valveswitch",
+    "windowstatus",
+}
+
 # Measurement-only fallbacks never expose a write action. Other exact DPTs can
 # still be represented when a communication object proves this is telemetry.
 MEASUREMENT_DPTS = {
@@ -139,7 +160,16 @@ TELEMETRY_DPTS = MEASUREMENT_DPTS | {
 }
 LIGHT_TYPES = {"switchablelight", "dimmablelight", "light", "ft1", "ft6"}
 COVER_TYPES = {"sunprotection", "cover", "blinds", "ft7"}
-CLIMATE_TYPES = {"heatingradiator", "heatingfloor", "climate", "hvac", "ft8"}
+CLIMATE_TYPES = {
+    "heatingradiator",
+    "heatingfloor",
+    "climate",
+    "hvac",
+    "ft4",
+    "ft5",
+    "ft8",
+    "ft9",
+}
 
 # Installer abbreviations require communication-object channel evidence below;
 # they are deliberately not added to the name-only convention table.
@@ -152,20 +182,28 @@ ABBREVIATED_ROLES = {
     "CT-FB": ("color_temperature_state_address", {(7, 600), (5, 1)}),
 }
 
-# The installer "<unit>-Climate-SW/-MODE/-FAN(-FB)" convention observed across
-# real air-conditioner exports. HA's climate schema does not require a
-# temperature pair, so this dialect only ever emits on/off, controller-mode
-# (DPT 20.105, not the DPT 20.102 operation mode) and fan-speed (DPT 5.001
-# only -- a raw byte-count fan step such as 5.010 is a different, unverified
-# scale and is left unmapped rather than guessed). "SW" itself is the anchor
-# command and is intentionally absent here, mirroring ABBREVIATED_ROLES.
+# The installer "<unit>-Climate-SW/-MODE/-FAN/-VAL(-FB)/-VAL-REAL-FB" convention
+# observed across real air-conditioner exports. HA's KNX climate schema
+# requires both temperature_address and target_temperature_state_address, so
+# a climate entity is only emitted when the real room temperature
+# (VAL-REAL-FB) and target-temperature feedback (VAL-FB) are proven on the same
+# channel. "VAL" is only a setpoint when it carries DPT 9.001; exports that use
+# a raw 5.010 "VAL" are left unmapped. Controller mode is DPT 20.105 (not the
+# DPT 20.102 operation mode) and fan speed is DPT 5.001 only. "SW" itself is the
+# anchor command and is intentionally absent here, mirroring ABBREVIATED_ROLES.
 CLIMATE_ROLE_FIELDS = {
     "SW-FB": ("on_off_state_address", {(1, 1), (1, 11)}),
     "MODE": ("controller_mode_address", {(20, 105)}),
     "MODE-FB": ("controller_mode_state_address", {(20, 105)}),
     "FAN": ("fan_speed_address", {(5, 1)}),
     "FAN-FB": ("fan_speed_state_address", {(5, 1)}),
+    "VAL": ("target_temperature_address", {(9, 1)}),
+    "VAL-FB": ("target_temperature_state_address", {(9, 1)}),
+    "VAL-REAL-FB": ("temperature_address", {(9, 1)}),
 }
+
+# Home Assistant's KNX climate YAML schema rejects an entity without these.
+CLIMATE_REQUIRED_FIELDS = {"temperature_address", "target_temperature_state_address"}
 
 # 1-bit encodings that a proven on/off feedback address may mix: Switch (0/1),
 # State (0/1) and Bool (0/1) share the same wire format, so a status object
@@ -243,6 +281,8 @@ class _Planner:
         self.blocked: set[str] = set()
         self.used: set[str] = set()
         self.candidates: list[dict] = []
+        self.non_entity_members: set[str] = set()
+        self.unresolved_members: set[str] = set()
         self._load()
 
     def _load(self) -> None:
@@ -583,9 +623,8 @@ class _Planner:
 
     def climate_groups(self) -> None:
         """Join the installer's "<unit>-Climate-SW/-MODE/-FAN(-FB)" convention
-        into a climate entity built only from on/off, controller-mode and
-        fan-speed addresses -- HA's climate schema does not require a
-        temperature pair, unlike the ETS-Function climate path in `_group()`.
+        into a climate entity. HA's climate schema requires the room temperature
+        and target-temperature feedback, so those must be proven as well.
         Every role still needs the same proven actuator-channel evidence as
         the SW/VAL/CT light dialect, and the exact-DPT guard still applies.
         """
@@ -597,7 +636,8 @@ class _Planner:
             if address in self.used:
                 continue
             match = re.fullmatch(
-                r"(.+?)[\s_-]+climate[\s_-]+(sw-fb|sw|mode-fb|mode|fan-fb|fan)",
+                r"(.+?)[\s_-]+climate[\s_-]+"
+                r"(sw-fb|sw|mode-fb|mode|fan-fb|fan|val-real-fb|val-fb|val)",
                 _label(ga.get("name"), ""),
                 re.IGNORECASE,
             )
@@ -639,11 +679,10 @@ class _Planner:
             self._finish_climate(names[key], fields)
 
     def _finish_climate(self, name: str, fields: dict[str, str]) -> None:
-        # A bare on/off pair with no proven controller-mode or fan-speed
-        # channel is not distinctly a climate device; leave it for the plain
-        # switch fallback instead of manufacturing a control-less climate
-        # entity.
-        if not {"controller_mode_address", "fan_speed_address"} & fields.keys():
+        # HA rejects the whole KNX configuration when a climate row lacks its
+        # required temperature addresses, so never emit a partial one. The
+        # command addresses stay available to the plain fallbacks instead.
+        if not fields.keys() >= CLIMATE_REQUIRED_FIELDS:
             return
         self._add("climate", name, fields, "exact-name-object-channel")
 
@@ -796,8 +835,22 @@ class _Planner:
                 return
         elif "address" in fields:
             platform = "light" if kind in LIGHT_TYPES else "switch"
-            if "brightness_address" in fields and platform != "light":
+            dimming = {"brightness_address", "color_temperature_address"}
+            if dimming & fields.keys() and platform != "light":
                 platform = None
+            if "color_temperature_state_address" in fields:
+                command = fields.get("color_temperature_address")
+                state = fields["color_temperature_state_address"]
+                if command is None or self.dpts[command] != self.dpts[state]:
+                    for address in mentioned:
+                        self.issues.setdefault(address, "role_datapoint_type_mismatch")
+                    self.blocked.update(mentioned)
+                    return
+            if "color_temperature_address" in fields:
+                relative = self.dpts[fields["color_temperature_address"]] == (5, 1)
+                fields["color_temperature_mode"] = (
+                    "relative" if relative else "absolute"
+                )
         if platform is None:
             return
         allowed = {
@@ -806,6 +859,9 @@ class _Planner:
                 "state_address",
                 "brightness_address",
                 "brightness_state_address",
+                "color_temperature_address",
+                "color_temperature_state_address",
+                "color_temperature_mode",
             },
             "switch": {"address", "state_address"},
             "cover": {
@@ -839,9 +895,24 @@ class _Planner:
             return
         self._add(platform, name, fields, source)
 
+    def _function_member_role(self, function_name: str, address: str) -> str | None:
+        """Resolve a Function member without a standard ETS DatapointRole.
+
+        ETS has no standard role for e.g. colour temperature, absolute blind
+        position or air-conditioner mode/fan. Such a member may carry an exact
+        name convention, but only when its prefix is exactly the Function's own
+        name: the Function membership proves the grouping, the suffix names the
+        role, and the exact-DPT guard in `_group()` still applies.
+        """
+        parsed = _named_role(_label(self.groups.get(address, {}).get("name"), ""))
+        if parsed and parsed[0].casefold() == function_name.casefold():
+            return parsed[1]
+        return None
+
     def functions(self) -> None:
         for function_id, raw in sorted(_dict(self.project.get("functions")).items()):
             function = _dict(raw)
+            function_name = _label(function.get("name"), function_id)
             refs = []
             for ref_key, raw_ref in _dict(function.get("group_addresses")).items():
                 ref = _dict(raw_ref)
@@ -851,6 +922,15 @@ class _Planner:
                 if address is None:
                     address = str(raw_address or ref_key)
                     self.issues[address] = "missing_function_address"
+                elif role in NON_ENTITY_FUNCTION_ROLES:
+                    self.non_entity_members.add(address)
+                    continue
+                elif role not in ROLE_FIELDS and role != "temproomsetpoint":
+                    named = self._function_member_role(function_name, address)
+                    if named is None:
+                        self.unresolved_members.add(address)
+                        continue
+                    role = named
                 # TempRoomSetpoint is not inherently a write or state role. Use
                 # both only when the object flags explicitly prove both roles.
                 if role == "temproomsetpoint":
@@ -866,7 +946,7 @@ class _Planner:
                     continue
                 refs.append((role, address))
             self._group(
-                _label(function.get("name"), function_id),
+                function_name,
                 function.get("function_type", ""),
                 refs,
                 "ets-function-role",
@@ -937,6 +1017,17 @@ class _Planner:
                 self._add("sensor", name, config, "ets-dpt-telemetry")
             else:
                 self.issues[address] = "insufficient_supported_entity_metadata"
+
+    def annotate_function_members(self) -> None:
+        """Explain unmapped Function members instead of a generic reason."""
+        generic = {None, "insufficient_supported_entity_metadata"}
+        for members, reason in (
+            (self.non_entity_members, "function_role_not_exposed"),
+            (self.unresolved_members, "unresolved_function_role"),
+        ):
+            for address in members:
+                if address not in self.used and self.issues.get(address) in generic:
+                    self.issues[address] = reason
 
     def result(self) -> dict:
         # Any disagreement about the same command address is a conflict, not
@@ -1024,4 +1115,5 @@ def plan_project(project: dict) -> dict:
     planner.scene_metadata()
     planner.named_groups()
     planner.fallback()
+    planner.annotate_function_members()
     return planner.result()
