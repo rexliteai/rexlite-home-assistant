@@ -127,6 +127,14 @@ def independent_units(base, unit_roles, count=3):
     return project(*groups, objects=objects), table
 
 
+# Room temperature plus setpoint command/feedback, as used on real exports.
+CLIMATE_TEMPERATURES = [
+    ("Climate-VAL", 9, 1),
+    ("Climate-VAL-FB", 9, 1),
+    ("Climate-VAL-REAL-FB", 9, 1),
+]
+
+
 def has_ha_distribution():
     try:
         importlib.metadata.version("homeassistant")
@@ -422,7 +430,7 @@ class KNXProjectMappingTests(unittest.TestCase):
         self.assertEqual(len(switches), 1)
         self.assertEqual(switches[0]["address"], table[(2, "SW")])
 
-    def test_climate_dialect_maps_on_off_mode_and_fan(self):
+    def test_climate_dialect_maps_on_off_mode_fan_and_temperatures(self):
         p, table = independent_units(
             "13F-A12",
             [
@@ -432,6 +440,7 @@ class KNXProjectMappingTests(unittest.TestCase):
                 ("Climate-MODE-FB", 20, 105),
                 ("Climate-FAN", 5, 1),
                 ("Climate-FAN-FB", 5, 1),
+                *CLIMATE_TEMPERATURES,
             ],
             count=1,
         )
@@ -448,7 +457,50 @@ class KNXProjectMappingTests(unittest.TestCase):
         self.assertEqual(
             climate["fan_speed_state_address"], table[(1, "Climate-FAN-FB")]
         )
-        self.assertNotIn("temperature_address", climate)
+        self.assertEqual(
+            climate["temperature_address"], table[(1, "Climate-VAL-REAL-FB")]
+        )
+        self.assertEqual(
+            climate["target_temperature_address"], table[(1, "Climate-VAL")]
+        )
+        self.assertEqual(
+            climate["target_temperature_state_address"],
+            table[(1, "Climate-VAL-FB")],
+        )
+
+    def test_climate_dialect_without_temperatures_never_emits_invalid_climate(self):
+        # HA's KNX schema requires temperature_address and
+        # target_temperature_state_address; one invalid climate row would make
+        # the whole deployment fail schema validation.
+        p, table = independent_units(
+            "13F-A12",
+            [
+                ("Climate-SW", 1, 1),
+                ("Climate-MODE", 20, 105),
+                ("Climate-FAN", 5, 1),
+                ("Climate-VAL-FB", 9, 1),
+            ],
+            count=1,
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("climate", result["config"])
+        self.assertEqual(
+            result["config"]["switch"][0]["address"], table[(1, "Climate-SW")]
+        )
+
+    def test_climate_dialect_byte_count_value_is_not_a_setpoint(self):
+        p, _ = independent_units(
+            "13F-A12",
+            [
+                ("Climate-SW", 1, 1),
+                ("Climate-MODE", 20, 105),
+                ("Climate-VAL", 5, 10),
+                ("Climate-VAL-FB", 5, 10),
+                ("Climate-VAL-REAL-FB", 9, 1),
+            ],
+            count=1,
+        )
+        self.assertNotIn("climate", mapper.plan_project(p)["config"])
 
     def test_climate_dialect_without_mode_or_fan_falls_back_to_plain_switch(self):
         # A bare on/off pair is not distinctly a climate device; do not
@@ -466,7 +518,12 @@ class KNXProjectMappingTests(unittest.TestCase):
         # the entity, even though the proven mode channel still forms one.
         p, table = independent_units(
             "13F-A12",
-            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105), ("Climate-FAN", 5, 10)],
+            [
+                ("Climate-SW", 1, 1),
+                ("Climate-MODE", 20, 105),
+                ("Climate-FAN", 5, 10),
+                *CLIMATE_TEMPERATURES,
+            ],
             count=1,
         )
         result = mapper.plan_project(p)
@@ -481,7 +538,7 @@ class KNXProjectMappingTests(unittest.TestCase):
     def test_multiple_climate_units_share_one_prefix_split_by_proven_channel(self):
         p, table = independent_units(
             "13F-A12",
-            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105)],
+            [("Climate-SW", 1, 1), ("Climate-MODE", 20, 105), *CLIMATE_TEMPERATURES],
             count=2,
         )
         result = mapper.plan_project(p)
@@ -938,6 +995,16 @@ class KNXProjectMappingTests(unittest.TestCase):
                 ga("5/0/3", "AC 目標溫度狀態", 9, 1),
             ),
             project(ga("4/0/1", "Scene bus", 18, 1), functions={"S1": scene}),
+            independent_units(
+                "13F-A12",
+                [
+                    ("Climate-SW", 1, 1),
+                    ("Climate-MODE", 20, 105),
+                    ("Climate-FAN", 5, 1),
+                    *CLIMATE_TEMPERATURES,
+                ],
+                count=2,
+            )[0],
             project(ga("6/0/1", "Relay switch", 1, 1)),
             project(ga("6/0/2", "Status", 1, 11)),
         ]

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.15
+
+- Fix: the installer `<unit>-Climate-*` dialect added in 0.1.14 emitted
+  `climate` rows without `temperature_address` /
+  `target_temperature_state_address`. Home Assistant's KNX schema requires
+  both, so a single such row made the whole deployment fail schema
+  validation (reproduced on a real 25-project corpus with HA 2026.9.1). The
+  dialect now also recognises `-Climate-VAL` (DPT 9.001 setpoint),
+  `-Climate-VAL-FB` (setpoint feedback) and `-Climate-VAL-REAL-FB` (room
+  temperature) and only emits a climate entity when both required
+  temperature addresses are proven on the same channel; otherwise the
+  command addresses keep their plain fallbacks.
+- Bump the mapping revision (now 7) so imported projects are re-planned.
+
 ## 0.1.14
 
 - Split several distinct actuator outputs (e.g. multiple DALI circuits, or

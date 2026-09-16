@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 6
+MAPPER_REVISION = 7
 
 # role: (YAML field, allowed exact DPTs). Names here are semantic roles, not GA
 # names. Standard ETS roles include AbsoluteSetvalueControl/ActualDimmingValue.
@@ -152,20 +152,28 @@ ABBREVIATED_ROLES = {
     "CT-FB": ("color_temperature_state_address", {(7, 600), (5, 1)}),
 }
 
-# The installer "<unit>-Climate-SW/-MODE/-FAN(-FB)" convention observed across
-# real air-conditioner exports. HA's climate schema does not require a
-# temperature pair, so this dialect only ever emits on/off, controller-mode
-# (DPT 20.105, not the DPT 20.102 operation mode) and fan-speed (DPT 5.001
-# only -- a raw byte-count fan step such as 5.010 is a different, unverified
-# scale and is left unmapped rather than guessed). "SW" itself is the anchor
-# command and is intentionally absent here, mirroring ABBREVIATED_ROLES.
+# The installer "<unit>-Climate-SW/-MODE/-FAN/-VAL(-FB)/-VAL-REAL-FB" convention
+# observed across real air-conditioner exports. HA's KNX climate schema
+# requires both temperature_address and target_temperature_state_address, so
+# a climate entity is only emitted when the real room temperature
+# (VAL-REAL-FB) and target-temperature feedback (VAL-FB) are proven on the same
+# channel. "VAL" is only a setpoint when it carries DPT 9.001; exports that use
+# a raw 5.010 "VAL" are left unmapped. Controller mode is DPT 20.105 (not the
+# DPT 20.102 operation mode) and fan speed is DPT 5.001 only. "SW" itself is the
+# anchor command and is intentionally absent here, mirroring ABBREVIATED_ROLES.
 CLIMATE_ROLE_FIELDS = {
     "SW-FB": ("on_off_state_address", {(1, 1), (1, 11)}),
     "MODE": ("controller_mode_address", {(20, 105)}),
     "MODE-FB": ("controller_mode_state_address", {(20, 105)}),
     "FAN": ("fan_speed_address", {(5, 1)}),
     "FAN-FB": ("fan_speed_state_address", {(5, 1)}),
+    "VAL": ("target_temperature_address", {(9, 1)}),
+    "VAL-FB": ("target_temperature_state_address", {(9, 1)}),
+    "VAL-REAL-FB": ("temperature_address", {(9, 1)}),
 }
+
+# Home Assistant's KNX climate YAML schema rejects an entity without these.
+CLIMATE_REQUIRED_FIELDS = {"temperature_address", "target_temperature_state_address"}
 
 # 1-bit encodings that a proven on/off feedback address may mix: Switch (0/1),
 # State (0/1) and Bool (0/1) share the same wire format, so a status object
@@ -583,9 +591,8 @@ class _Planner:
 
     def climate_groups(self) -> None:
         """Join the installer's "<unit>-Climate-SW/-MODE/-FAN(-FB)" convention
-        into a climate entity built only from on/off, controller-mode and
-        fan-speed addresses -- HA's climate schema does not require a
-        temperature pair, unlike the ETS-Function climate path in `_group()`.
+        into a climate entity. HA's climate schema requires the room temperature
+        and target-temperature feedback, so those must be proven as well.
         Every role still needs the same proven actuator-channel evidence as
         the SW/VAL/CT light dialect, and the exact-DPT guard still applies.
         """
@@ -597,7 +604,8 @@ class _Planner:
             if address in self.used:
                 continue
             match = re.fullmatch(
-                r"(.+?)[\s_-]+climate[\s_-]+(sw-fb|sw|mode-fb|mode|fan-fb|fan)",
+                r"(.+?)[\s_-]+climate[\s_-]+"
+                r"(sw-fb|sw|mode-fb|mode|fan-fb|fan|val-real-fb|val-fb|val)",
                 _label(ga.get("name"), ""),
                 re.IGNORECASE,
             )
@@ -639,11 +647,10 @@ class _Planner:
             self._finish_climate(names[key], fields)
 
     def _finish_climate(self, name: str, fields: dict[str, str]) -> None:
-        # A bare on/off pair with no proven controller-mode or fan-speed
-        # channel is not distinctly a climate device; leave it for the plain
-        # switch fallback instead of manufacturing a control-less climate
-        # entity.
-        if not {"controller_mode_address", "fan_speed_address"} & fields.keys():
+        # HA rejects the whole KNX configuration when a climate row lacks its
+        # required temperature addresses, so never emit a partial one. The
+        # command addresses stay available to the plain fallbacks instead.
+        if not fields.keys() >= CLIMATE_REQUIRED_FIELDS:
             return
         self._add("climate", name, fields, "exact-name-object-channel")
 
