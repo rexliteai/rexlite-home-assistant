@@ -2,7 +2,9 @@
   "domain": "rexlite",
   "name": "REXLiTE AI",
   "after_dependencies": [
-    "knx"
+    "knx",
+    "ssdp",
+    "zeroconf"
   ],
   "codeowners": [
     "@rexliteai"
@@ -18,5 +20,5 @@
   "issue_tracker": "https://github.com/rexliteai/rexlite-home-assistant/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.17"
+  "version": "0.1.18"
 }

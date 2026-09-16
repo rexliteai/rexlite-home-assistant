@@ -55,7 +55,7 @@ jobs:
           root = pathlib.Path(homeassistant.__file__).parent
           requirements = [
               requirement
-              for domain in ("knx", "frontend")
+              for domain in ("knx", "frontend", "ssdp", "zeroconf")
               for requirement in json.loads(
                   (root / "components" / domain / "manifest.json").read_text()
               ).get("requirements", [])
@@ -69,6 +69,8 @@ jobs:
         run: python -m unittest discover -s tests -q
       - name: Verify cloud reconnect, heartbeat recovery and session cleanup
         run: python tests/cloud_connection_runtime_check.py
+      - name: Verify host-scoped device discovery
+        run: python tests/device_discovery_runtime_check.py
       - name: Verify network traffic services, storage and admin access
         run: python tests/network_traffic_runtime_check.py
       - name: Validate real schemas, package loading, native IDs, ETS import and writer transaction

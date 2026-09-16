@@ -38,9 +38,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register local administrative deployment commands once per HA instance."""
     from homeassistant.helpers.start import async_at_started
 
+    from .device_discovery import register_device_discovery
     from .knx_project_deployment import register_websocket_commands
     from .network_traffic_api import async_register_network_traffic
 
+    register_device_discovery(hass)
     deployer = register_websocket_commands(hass)
     await async_register_network_traffic(hass)
 

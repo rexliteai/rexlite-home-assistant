@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.18
+
+- Add administrator-only, bounded LAN discovery through `rexlite/discovery/scan`.
+  Refresh SSDP and mDNS from the HA host and return native pending setup flows.
+- Identify unconfigured TP-Link Deco routers from fresh SSDP responses and
+  suggest their local management address; keep existing Deco hubs out of pending
+  results. Discovery never submits credentials or installs integrations.
+- Coalesce concurrent scans, limit their duration and release temporary listeners.
+  Powered devices must be network reachable and advertise a supported protocol.
+
 ## 0.1.17
 
 - Add Fortinet as a managed HA traffic source provider. Interface SNMP
