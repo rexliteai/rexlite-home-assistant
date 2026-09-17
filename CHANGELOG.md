@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.21
+
+- Read Deco tracker values with live HA report timestamps so unchanged online nodes and zero-traffic clients do not incorrectly expire.
+- Preserve timestamp-based expiry for stopped reporting; do not refresh timestamps merely when diagnostics are requested.
+
 ## 0.1.20
 
 - 待加入設備只回傳通過本次 LAN 服務連線檢查的 SSDP / mDNS 項目；不再將歷史探索紀錄、USB 或未知狀態當成在線網路設備。

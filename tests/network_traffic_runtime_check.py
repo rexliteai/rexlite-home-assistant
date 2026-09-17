@@ -38,6 +38,26 @@ async def main():
             dr.async_setup(hass)
         await dr.async_load(hass)
         await er.async_load(hass)
+        # Reproduce HA's unchanged-report serialization cache using real States.
+        deco_id = "device_tracker.quiet_deco"
+        attrs = {"device_type": "client", "down_kilobytes_per_s": 0}
+        hass.states.async_set(deco_id, "home", attrs)
+        original = hass.states.get(deco_id)
+        cached = original.as_dict_json
+        hass.states.async_set(deco_id, "home", attrs)
+        current = hass.states.get(deco_id)
+        assert current is original and current.last_reported >= current.last_updated
+        fake_registry = types.SimpleNamespace(
+            entities={
+                deco_id: types.SimpleNamespace(
+                    entity_id=deco_id, platform="tplink_deco"
+                )
+            }
+        )
+        reports = m.deco_state_reports(hass, fake_registry)
+        assert reports[0]["last_reported"] == current.last_reported.isoformat()
+        assert reports[0]["attributes"]["down_kilobytes_per_s"] == 0
+        assert json.loads(cached)["last_updated"] == current.last_updated.isoformat()
         manager = await m.async_register_network_traffic(hass)
         assert await m.async_register_network_traffic(hass) is manager
         admin = User(name="Admin", perm_lookup=None, is_owner=True)

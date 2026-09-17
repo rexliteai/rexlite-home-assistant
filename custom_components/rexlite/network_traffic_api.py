@@ -6,6 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from .deco_traffic import deco_state_reports
 from .network_traffic import MAX_CHANNELS, TrafficSampler, validate_channel
 
 DATA_KEY = "rexlite_network_traffic"
@@ -129,7 +130,11 @@ class NetworkTraffic:
                 else ""
             )
             results.append(row)
-        return {"schemaVersion": 1, "channels": results}
+        return {
+            "schemaVersion": 1,
+            "channels": results,
+            "decoStates": deco_state_reports(self.hass, registry),
+        }
 
 
 async def async_register_network_traffic(hass: Any) -> NetworkTraffic:
