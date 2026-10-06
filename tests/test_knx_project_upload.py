@@ -79,6 +79,35 @@ class UploadTests(unittest.TestCase):
                 projectFingerprint=digest.hexdigest(),
             )
 
+    def test_sealed_upload_is_readable_without_being_consumed(self):
+        data = b"PK\x03\x04abcdefgh"
+        file_id = "rexlite-" + self.base["uploadId"]
+        fingerprint = hashlib.sha256(data).hexdigest()
+        self.start(data)
+        self.call("chunk", offset=0, data=base64.b64encode(data).decode())
+        with self.assertRaisesRegex(ValueError, "not_ready"):
+            self.store.open_sealed(file_id, fingerprint)
+        self.call("seal")
+        with self.assertRaisesRegex(ValueError, "fingerprint_mismatch"):
+            self.store.open_sealed(file_id, "0" * 64)
+        with self.store.open_sealed(file_id, fingerprint) as stream:
+            self.assertEqual(stream.read(), data)
+        with self.store.consume(file_id) as path:
+            self.assertEqual(path.read_bytes(), data)
+            with self.assertRaisesRegex(ValueError, "not_ready"):
+                self.store.open_sealed(file_id, fingerprint)
+
+    def test_open_sealed_handle_survives_discard(self):
+        data = b"PK\x03\x04abcdefgh"
+        self.start(data)
+        self.call("chunk", offset=0, data=base64.b64encode(data).decode())
+        self.call("seal")
+        with self.store.open_sealed(
+            "rexlite-" + self.base["uploadId"], hashlib.sha256(data).hexdigest()
+        ) as stream:
+            self.call("discard")
+            self.assertEqual(stream.read(), data)
+
     def test_wrong_fingerprint_cannot_be_consumed(self):
         self.call("start", fileName="test.knxproj", size=4, projectFingerprint="0" * 64)
         self.call("chunk", offset=0, data="UEsDBA==")

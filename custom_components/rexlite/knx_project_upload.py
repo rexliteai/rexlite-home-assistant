@@ -139,6 +139,20 @@ class ProjectUploads:
             for k in ("offset", "size", "fileName", "projectFingerprint", "sealed")
         }
 
+    def open_sealed(self, file_id, fingerprint):
+        """Open a sealed upload for reading; it stays staged for consume()."""
+        key = file_id.removeprefix("rexlite-")
+        with self.lock:
+            session = self.sessions.get(key)
+            if not session or not session["sealed"] or session.get("consuming"):
+                raise ValueError("upload_not_ready")
+            if session["projectFingerprint"] != fingerprint:
+                raise ValueError("project_fingerprint_mismatch")
+            session["touched"] = time.monotonic()
+            # The handle keeps these sealed bytes readable even if the session is
+            # discarded or expires while the caller is still reading them.
+            return (Path(self.directory.name) / key).open("rb")
+
     @contextmanager
     def consume(self, file_id):
         key = file_id.removeprefix("rexlite-")

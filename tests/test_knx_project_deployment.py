@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib.util
+import io
 import sys
 import tempfile
 import types
@@ -60,6 +61,41 @@ class InvalidPasswordException(Exception):
 
 parser_errors = types.ModuleType("xknxproject.exceptions")
 parser_errors.InvalidPasswordException = InvalidPasswordException
+
+
+def password_parser(on_read=None, failure=None) -> dict:
+    """Stand-in xknxproject whose archive password is "secret".
+
+    Like xknxproject.zip.extract, a missing password fails on entry and a wrong
+    one only when a protected member is opened (zipfile's RuntimeError).
+    """
+
+    @contextmanager
+    def extract(archive, password=None):
+        if failure:
+            raise failure
+        if not password:
+            raise InvalidPasswordException("Password required.")
+
+        def open_project_meta():
+            if password != "secret":
+                raise RuntimeError("Bad password for file 'project.xml'")
+            if on_read:
+                on_read(archive)
+            return io.BytesIO(b"<KNX/>")
+
+        try:
+            yield types.SimpleNamespace(open_project_meta=open_project_meta)
+        except RuntimeError as err:
+            raise InvalidPasswordException("Invalid password.") from err
+
+    archives = types.ModuleType("xknxproject.zip")
+    archives.extract = extract
+    return {
+        "xknxproject": types.ModuleType("xknxproject"),
+        "xknxproject.exceptions": parser_errors,
+        "xknxproject.zip": archives,
+    }
 
 
 def load_file(path: Path) -> dict:
@@ -1023,7 +1059,7 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
             m.register_websocket_commands(self.hass)
             m.register_websocket_commands(self.hass)
         self.addCleanup(self.hass.data["rexlite_knx_uploads"].close)
-        self.assertEqual(len(handlers), 7)
+        self.assertEqual(len(handlers), 8)
         for handler in handlers:
             with self.assertRaises(PermissionError):
                 await handler(self.hass, Connection(), {"id": 1})
@@ -1228,6 +1264,7 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
         result = await self.writer.capabilities()
         self.assertTrue(result["supported"])
         self.assertEqual(result["version"], 1)
+        self.assertTrue(result["passwordCheck"])
         self.assertFalse((self.root / m.GENERATED).exists())
         self.assertEqual(self.reload_calls, 0)
 
@@ -1501,6 +1538,129 @@ class DeploymentTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.writer._parse_uploaded_project(
                 self.hass, "file-id", "secret", m.digest(raw)
+            )
+
+    async def test_password_check_needs_no_knx_and_keeps_the_staged_upload(self):
+        handlers = {}
+        websocket = types.SimpleNamespace(
+            websocket_command=lambda schema: lambda fn: fn,
+            require_admin=lambda fn: fn,
+            async_response=lambda fn: fn,
+            async_register_command=lambda hass, fn: handlers.update({fn.__name__: fn}),
+        )
+        components = types.ModuleType("homeassistant.components")
+        components.websocket_api = websocket
+        self.hass.data.clear()  # The KNX integration has not been set up yet.
+        self.hass.bus = types.SimpleNamespace(async_listen_once=Mock())
+        with patch.dict(sys.modules, {"homeassistant.components": components}):
+            m.register_websocket_commands(self.hass)
+        uploads = self.hass.data["rexlite_knx_uploads"]
+        self.addCleanup(uploads.close)
+        raw = b"PK\x03\x04 protected ETS project"
+        upload = {"uploadId": "c" * 32, "owner": "operator"}
+        uploads.request(
+            dict(
+                upload,
+                action="start",
+                fileName="protected.knxproj",
+                size=len(raw),
+                projectFingerprint=m.digest(raw),
+            )
+        )
+        uploads.request(
+            dict(upload, action="chunk", offset=0, data=base64.b64encode(raw).decode())
+        )
+        uploads.request(dict(upload, action="seal"))
+        file_id = "rexlite-" + "c" * 32
+        fingerprint = m.digest(raw)
+        reads = []
+
+        class Connection:
+            def __init__(self):
+                self.sent = []
+
+            def send_result(self, msg_id, result):
+                self.sent.append(("result", result))
+
+            def send_error(self, msg_id, code, message):
+                self.sent.append(("error", code, message))
+
+        async def check(password, fingerprint=fingerprint, file_id=file_id):
+            connection = Connection()
+            parser = password_parser(
+                on_read=lambda archive: reads.append(
+                    (archive.read(), uploads.lock.locked())
+                )
+            )
+            with patch.dict(sys.modules, parser):
+                await handlers["check_password"](
+                    self.hass,
+                    connection,
+                    {
+                        "id": 1,
+                        "file_id": file_id,
+                        "password": password,
+                        "projectFingerprint": fingerprint,
+                    },
+                )
+            return connection.sent
+
+        failed = "project_import_failed"
+        self.assertEqual(
+            await check("wrong"), [("error", failed, "project_password_invalid")]
+        )
+        self.assertEqual(
+            await check(""), [("error", failed, "project_password_required")]
+        )
+        self.assertEqual(await check("secret"), [("result", {"status": "verified"})])
+        # The staged bytes were read outside the upload store's lock.
+        self.assertEqual(reads, [(raw, False)])
+        self.assertEqual(
+            await check("secret", fingerprint="0" * 64),
+            [("error", "project_upload_failed", "project_fingerprint_mismatch")],
+        )
+        self.assertEqual(
+            await check("secret", file_id="rexlite-" + "d" * 32),
+            [("error", "project_upload_failed", "upload_not_ready")],
+        )
+        with uploads.consume(file_id) as path:
+            self.assertEqual(path.read_bytes(), raw)
+        self.assertNotIn("knx", self.hass.data)
+        self.assertEqual(self.reload_calls, 0)
+
+
+class PasswordCheckTests(unittest.TestCase):
+    """The pre-setup check must classify passwords exactly like the import."""
+
+    def check(self, password, **parser):
+        with patch.dict(sys.modules, password_parser(**parser)):
+            return m.check_project_password(io.BytesIO(b"PK\x03\x04"), password)
+
+    def test_password_is_tried_on_the_protected_archive(self):
+        self.assertEqual(self.check("secret"), {"status": "verified"})
+        for password, expected in (
+            ("", "project_password_required"),
+            ("wrong", "project_password_invalid"),
+        ):
+            with (
+                self.subTest(expected),
+                self.assertRaisesRegex(m.DeploymentError, f"^{expected}$"),
+            ):
+                self.check(password)
+
+    def test_unjudgeable_projects_are_left_to_the_import(self):
+        self.assertEqual(
+            self.check("secret", failure=ValueError("Signature file not found.")),
+            {"status": "unverifiable", "reason": "project_unreadable"},
+        )
+        # Before KNX is set up, its xknxproject requirement may not be installed.
+        missing = dict.fromkeys(
+            ("xknxproject", "xknxproject.exceptions", "xknxproject.zip")
+        )
+        with patch.dict(sys.modules, missing):
+            self.assertEqual(
+                m.check_project_password(io.BytesIO(b"PK\x03\x04"), "secret"),
+                {"status": "unverifiable", "reason": "parser_unavailable"},
             )
 
 

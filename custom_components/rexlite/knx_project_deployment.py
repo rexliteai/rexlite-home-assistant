@@ -18,7 +18,7 @@ import sys
 import tempfile
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import yaml
 
@@ -682,6 +682,49 @@ def preserve_manual_plan(
     return result
 
 
+def password_error(password: str) -> DeploymentError:
+    # xknxproject raises one error for a missing and a wrong password;
+    # the operator fixes them differently, so report them apart.
+    return DeploymentError(
+        "project_password_invalid" if password else "project_password_required"
+    )
+
+
+def check_project_password(project: BinaryIO, password: str) -> dict:
+    """Try the password on a staged ETS archive without parsing the project.
+
+    Runs before KNX setup, which must not happen for a project that cannot be
+    opened. Only the small project.xml is decrypted, instead of a second full
+    parse of up to 100 MB. Whatever this cannot judge is left to the import,
+    which still reports password failures itself.
+    """
+    try:
+        from xknxproject.exceptions import InvalidPasswordException
+        from xknxproject.zip import extract
+    except ImportError:
+        # xknxproject is installed with the KNX integration's requirements.
+        return {"status": "unverifiable", "reason": "parser_unavailable"}
+    try:
+        with (
+            extract(project, password) as contents,
+            contents.open_project_meta() as meta,
+        ):
+            while meta.read(1024 * 1024):
+                pass
+    except InvalidPasswordException as err:
+        raise password_error(password) from err
+    except Exception:
+        return {"status": "unverifiable", "reason": "project_unreadable"}
+    return {"status": "verified"}
+
+
+def _check_staged_password(
+    uploads: Any, file_id: str, fingerprint: str, password: str
+) -> dict:
+    with uploads.open_sealed(file_id, fingerprint) as project:
+        return check_project_password(project, password)
+
+
 class ProjectDeployer:
     """Serialize writes, durably journal them, reload and verify actual entities."""
 
@@ -742,13 +785,7 @@ class ProjectDeployer:
                     path, password=password, language=hass.config.language
                 ).parse()
             except InvalidPasswordException as err:
-                # xknxproject raises one error for a missing and a wrong password;
-                # the operator fixes them differently, so report them apart.
-                raise DeploymentError(
-                    "project_password_invalid"
-                    if password
-                    else "project_password_required"
-                ) from err
+                raise password_error(password) from err
             project = enrich_project(project, path, password=password)
             if file_fingerprint(path) != fingerprint:
                 raise DeploymentError("project_file_changed_during_parse")
@@ -888,6 +925,7 @@ class ProjectDeployer:
             "integrationVersion": INTEGRATION_VERSION,
             "chunkedUpload": True,
             "maxProjectBytes": MAX_PROJECT_BYTES,
+            "passwordCheck": True,
         }
         try:
             info.update(self._compatibility())
@@ -1697,6 +1735,38 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
 
     @websocket_api.websocket_command(
         {
+            vol.Required("type"): "rexlite/knx/check_project_password",
+            vol.Required("file_id"): vol.All(str, vol.Match(r"^rexlite-[a-f0-9]{32}$")),
+            vol.Optional("password", default=""): str,
+            vol.Required("projectFingerprint"): vol.All(str, vol.Match(FINGERPRINT)),
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def check_password(hass: Any, connection: Any, msg: dict) -> None:
+        # Read-only and independent of KNX: callers run it before KNX setup and
+        # the staged upload remains for process_project.
+        try:
+            result = await hass.async_add_executor_job(
+                _check_staged_password,
+                uploads,
+                msg["file_id"],
+                msg["projectFingerprint"],
+                msg.get("password", ""),
+            )
+        except DeploymentError as err:
+            connection.send_error(msg["id"], "project_import_failed", str(err))
+        except ValueError as err:
+            connection.send_error(msg["id"], "project_upload_failed", str(err))
+        except OSError:
+            connection.send_error(
+                msg["id"], "project_upload_failed", "upload_storage_unavailable"
+            )
+        else:
+            connection.send_result(msg["id"], result)
+
+    @websocket_api.websocket_command(
+        {
             vol.Required("type"): "rexlite/knx/deploy_project",
             vol.Required("projectFingerprint"): vol.All(str, vol.Match(FINGERPRINT)),
         }
@@ -1753,6 +1823,7 @@ def register_websocket_commands(hass: Any) -> ProjectDeployer:
         capabilities,
         gateway_scan,
         process,
+        check_password,
         deploy,
         status,
         manual,

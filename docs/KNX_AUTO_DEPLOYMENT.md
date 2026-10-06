@@ -62,6 +62,16 @@ and are never validated a second time.
    but unavailable entities are counted separately. Failed activation/reload
    restores the journaled configuration; interrupted transactions recover on boot.
 
+Before KNX setup, when capabilities advertise `passwordCheck`, the cloud checks a
+sealed staged upload with `rexlite/knx/check_project_password` (`file_id`
+`rexlite-<uploadId>`, optional `password`, `projectFingerprint`; also
+administrator-only). It decrypts only `project.xml` with the installed
+`xknxproject`, needs neither a loaded KNX integration nor the deployment lock, and
+leaves the upload staged for `process_project`. A missing or wrong password fails
+exactly like the import (`project_import_failed` with `project_password_required`
+or `project_password_invalid`). `{"status": "unverifiable"}` means `xknxproject`
+is not installed yet or the archive could not be judged; the import then decides.
+
 All four WebSocket commands are administrator-only. The status command
 `rexlite/knx/project_deployment_status` accepts an optional fingerprint. It does
 not treat an existing generated file or stale states as proof of deployment.

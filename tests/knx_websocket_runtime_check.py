@@ -60,7 +60,7 @@ async def main() -> None:
         hass = HomeAssistant(directory)
         deployer = m.register_websocket_commands(hass)
         assert m.register_websocket_commands(hass) is deployer
-        assert len(hass.data["websocket_api"]) == 7
+        assert len(hass.data["websocket_api"]) == 8
         admin = User(name="Test administrator", perm_lookup=None, is_owner=True)
         viewer = User(name="Test viewer", perm_lookup=None)
         responses = asyncio.Queue()
@@ -130,6 +130,23 @@ async def main() -> None:
                 {"uploadId": "b" * 32, "owner": "test", "action": "seal"},
             )
         )["result"]["sealed"]
+        check = {
+            "file_id": "rexlite-" + "b" * 32,
+            "password": "",
+            "projectFingerprint": transfer["projectFingerprint"],
+        }
+        connection.user = viewer
+        assert (await request("check_project_password", check))["error"][
+            "code"
+        ] == "unauthorized"
+        connection.user = admin
+        # Four bytes are no ETS archive, so the check leaves them to the import.
+        response = await request("check_project_password", check)
+        assert response["result"]["status"] == "unverifiable", response
+        response = await request(
+            "check_project_password", dict(check, file_id="test-file")
+        )
+        assert response["error"]["code"] == "invalid_format", response
         assert (
             await request(
                 "project_upload",
