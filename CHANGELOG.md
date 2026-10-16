@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.32
+
+- 新增 `rexlite/hacs/yaml_package`（admin，見 `docs/hacs-yaml.md`）：MAX'Is運營平台替社群商店裡只能用 YAML 設定的整合（HACS `config_flow: false`）寫設定。每個整合一個 HA package：`.rexlite_hacs/<domain>.yaml`，以 `rexlite_hacs_<domain>: !include …` 接進 configuration.yaml（沿用 KNX 部署的 packages 寫法，含 `!include_dir_named` 目錄）。目錄是隱藏的，主機原有的 `packages: !include_dir_*` 不會重複載入。
+- 內容只能設定該整合本身：`<domain>:`，或每一項都是 `platform: <domain>` 的平台清單；標籤只收 `!secret`，不收錨點。
+- 寫入前後各跑一次 HA 的設定檢查（`check_config`）；寫入後多出錯誤或警告（行號差異不算）就整筆還原並回傳訊息，所以不會擋住重新啟動。寫入有 journal（`.rexlite_hacs/transaction.json`），中斷的寫入在 HA 啟動後還原；與 KNX 部署共用同一把鎖。
+- `get` 回內容、是否已載入（`hass.config.components`）與是否需要重新啟動（檔案與 HA 啟動時讀到的不同）；`remove` 把 package 清成空的（include 仍有效）；`status` 供平台偵測。
+- `get` 另回 `forms`：整合自己的設定格式（`<domain>` 鍵的 `CONFIG_SCHEMA`、各實體平台的 `PLATFORM_SCHEMA`）以 HA 設定精靈的序列化方式轉成表單欄位，平台用表單精靈取代 YAML 編輯器；必填欄位無法轉成表單的格式不列出（仍可用 YAML）。
+- KNX：`SafeFiles.activation_changes` 改成可指定 package 名稱與檔案（預設值不變）。
+
 ## 0.1.31
 
 - 修正 KNX 部署在 HA 2026.8（及 2026.1～2026.7）一有窗簾按鈕就失敗：HA 的 YAML `button` unique_id 是「位址_payload」（例：`1/3/3_1`，`payload` 預設 1，`value`＋`type` 換算成原始 payload），部署端卻只用位址，按鈕永遠對不上，驗證階段等滿 20 秒後回滾成 `deployment_failed`。D3-7F（HA 2026.8.0、14 燈＋6 按鈕＋2 情境）兩次部署都是這樣失敗。HA 2026.9 起用自訂 unique_id，不受影響。

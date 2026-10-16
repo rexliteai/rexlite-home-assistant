@@ -186,25 +186,27 @@ class SafeFiles:
             + b"\n",
         )
 
-    def activation_changes(self) -> dict[str, bytes]:
-        """Link the fixed managed package to HA's actual package configuration."""
+    def activation_changes(
+        self, package_key: str = PACKAGE_KEY, target: str = GENERATED
+    ) -> dict[str, bytes]:
+        """Link a managed package file to HA's actual package configuration."""
         contents = self.read("configuration.yaml")
         if contents is None:
             raise DeploymentError("configuration_yaml_missing")
         text = contents.decode("utf-8")
         root = yaml.compose(text, Loader=yaml.SafeLoader)
         top = _mapping(root) if root else {}
-        include = f"!include {GENERATED}"
+        include = f"!include {target}"
         if "homeassistant" not in top:
             text += ("" if text.endswith("\n") else "\n") + (
-                f"\nhomeassistant:\n  packages:\n    {PACKAGE_KEY}: {include}\n"
+                f"\nhomeassistant:\n  packages:\n    {package_key}: {include}\n"
             )
             return {"configuration.yaml": text.encode()}
         home = top["homeassistant"]
         if isinstance(home, yaml.ScalarNode) and home.tag == "tag:yaml.org,2002:null":
             return {
                 "configuration.yaml": _insert_child(
-                    text, home, "packages", f"\n    {PACKAGE_KEY}: {include}", 2
+                    text, home, "packages", f"\n    {package_key}: {include}", 2
                 ).encode()
             }
         home_children = _mapping(home)
@@ -215,7 +217,7 @@ class SafeFiles:
                     text,
                     home,
                     "packages",
-                    f"\n{' ' * (home_indent + 2)}{PACKAGE_KEY}: {include}",
+                    f"\n{' ' * (home_indent + 2)}{package_key}: {include}",
                     home_indent,
                 ).encode()
             }
@@ -226,11 +228,11 @@ class SafeFiles:
         ):
             directory = packages.value
             self.path(directory)
-            relative = str(Path(directory) / f"{PACKAGE_KEY}.yaml")
-            include_path = os.path.relpath(self.path(GENERATED), self.path(directory))
+            relative = str(Path(directory) / f"{package_key}.yaml")
+            include_path = os.path.relpath(self.path(target), self.path(directory))
             directive = f"!include {json.dumps(include_path)}\n"
             content = (
-                f"{PACKAGE_KEY}: {directive}"
+                f"{package_key}: {directive}"
                 if packages.tag == "!include_dir_merge_named"
                 else directive
             )
@@ -241,14 +243,14 @@ class SafeFiles:
             return {relative: data}
         if isinstance(packages, yaml.MappingNode):
             items = _mapping(packages)
-            if PACKAGE_KEY in items:
-                value = items[PACKAGE_KEY]
-                if value.tag != "!include" or value.value != GENERATED:
+            if package_key in items:
+                value = items[package_key]
+                if value.tag != "!include" or value.value != target:
                     raise DeploymentError("managed_package_name_already_in_use")
                 return {}
         return {
             "configuration.yaml": _insert_child(
-                text, packages, PACKAGE_KEY, include, 4
+                text, packages, package_key, include, 4
             ).encode()
         }
 

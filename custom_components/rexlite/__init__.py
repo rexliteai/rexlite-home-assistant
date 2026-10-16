@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as home_assistant_version
 from homeassistant.core import HomeAssistant
@@ -33,6 +35,8 @@ type REXLiTEConfigEntry = ConfigEntry[REXLiTECoordinator]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+_LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register local administrative deployment commands once per HA instance."""
@@ -41,6 +45,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     from .device_discovery import register_device_discovery
     from .frigate_bridge import register_frigate_bridge
     from .hacs_bind import register_hacs_bind
+    from .hacs_yaml import register_hacs_yaml
     from .knx_project_deployment import register_websocket_commands
     from .network_traffic_api import async_register_network_traffic
     from .node_red_bridge import register_node_red_bridge
@@ -50,9 +55,19 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     register_frigate_bridge(hass)
     register_hacs_bind(hass)
     deployer = register_websocket_commands(hass)
+    # Both write configuration.yaml, so they share the deployment lock.
+    yaml_packages = register_hacs_yaml(hass, deployer.lock)
+    try:
+        await yaml_packages.snapshot()
+    except Exception:  # noqa: BLE001 - setup must not fail over it
+        _LOGGER.exception("Could not read the HACS YAML packages")
     await async_register_network_traffic(hass)
 
     async def recover_interrupted_deployment(_hass: HomeAssistant) -> None:
+        try:
+            await yaml_packages.recover()
+        except Exception:  # noqa: BLE001 - the KNX recovery still runs
+            _LOGGER.exception("HACS YAML rollback failed")
         await deployer.recover()
 
     async_at_started(hass, recover_interrupted_deployment)
