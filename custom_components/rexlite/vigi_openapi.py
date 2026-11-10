@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import unquote
 
-from .camera_probe import CameraError, _timeout, camera_host
+from .camera_probe import CAMERA_TLS, CameraError, _timeout, camera_host
 
 OPENAPI_PORT = 20443
 USERNAME = "admin"
@@ -184,7 +184,7 @@ class VigiOpenApi:
                 f"https://{self.host}:{self.port}/{path}",
                 data=json.dumps(body),
                 headers={"Content-Type": "application/json", "Connection": "close"},
-                ssl=False,
+                ssl=CAMERA_TLS,
                 timeout=_timeout(seconds or self.seconds),
             ) as response:
                 data = (await response.read())[:MAX_REPLY_BYTES]

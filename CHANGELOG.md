@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.52
+
+- 攝影機：VIGI／InSight 的 HTTPS（網頁 API、OpenAPI、一鍵開通）改用共用的 `CAMERA_TLS`：一樣不驗證憑證，但加密套件改用 OpenSSL 完整清單（`DEFAULT:@SECLEVEL=0`）。**VIGI C340S** 只接受 TLS 1.2 `AES256-GCM-SHA384`（RSA 金鑰交換）＋ 1024-bit 憑證，Python 預設（`ssl=False`）只給 ECDHE／DHE，握手失敗，重置後的攝影機被當成「沒有回應」，平台顯示「登入攝影機」而不是「一鍵開通」（科盛公司 192.168.1.52，2026-11-10）。
+- 不影響 C540V／LPR345Z 等原本就能連的攝影機（同樣優先用 ECDHE）。
+
 ## 0.1.51
 
 - KNX：名稱判斷「是不是燈」改成含 `燈`／`照明`／`light`（**不分大小寫，前後可以緊接字母或數字**）。REXLiTE ETS App 0.43.15 在英文 ETS 介面給英文預設名稱 `Light1`、`DimLight1`、`TunableLight1`；以前的 `\blight\b` 因為 `light` 後面緊接數字或字母沒有字邊界，比對不到。只影響**靠名稱**分類的路徑（縮寫名稱方言、名稱＋角色後綴）；App 產的專案看 ETS Function 類型（FT-1／FT-6），輸出不變。

@@ -35,7 +35,7 @@ from typing import Any
 from urllib.parse import quote, unquote
 from zoneinfo import ZoneInfo
 
-from .camera_probe import CameraError, _timeout, camera_host
+from .camera_probe import CAMERA_TLS, CameraError, _timeout, camera_host
 from .lpr_gate import normalize_plate
 from .vigi_openapi import plate_record
 from .vigi_setup import UNINITIALIZED, USERNAME, encrypt, public_key
@@ -260,7 +260,7 @@ class VigiWeb:
                     self._url(path),
                     data=json.dumps(body),
                     headers={"Content-Type": "application/json"},
-                    ssl=False,
+                    ssl=CAMERA_TLS,
                     timeout=_timeout(seconds or self.seconds),
                 ) as response:
                     data = (await response.read())[:MAX_REPLY_BYTES]
