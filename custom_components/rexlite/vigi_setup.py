@@ -30,7 +30,7 @@ from typing import Any
 from urllib.parse import quote, unquote
 from zoneinfo import ZoneInfo
 
-from .camera_probe import CameraError, OnvifClient, _timeout, camera_host
+from .camera_probe import CAMERA_TLS, CameraError, OnvifClient, _timeout, camera_host
 
 USERNAME = "admin"
 # Error code the camera's web API answers with until it has been activated.
@@ -146,7 +146,7 @@ async def _call(
             f"https://{host}/{path}",
             data=json.dumps(body),
             headers={"Content-Type": "application/json"},
-            ssl=False,
+            ssl=CAMERA_TLS,
             timeout=_timeout(seconds),
         ) as response:
             data = (await response.read())[:MAX_REPLY_BYTES]

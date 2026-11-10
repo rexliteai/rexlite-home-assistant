@@ -24,6 +24,7 @@ for name in ("camera_probe", "vigi_setup"):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 m = sys.modules[f"{package.__name__}.vigi_setup"]
+CAMERA_TLS = sys.modules[f"{package.__name__}.camera_probe"].CAMERA_TLS
 
 HOST = "192.168.68.66"
 PASSWORD = "Rex-Cam7Kp9x"
@@ -116,7 +117,7 @@ class Camera:
     def request_(self, method, url, **kwargs):
         parts = urlsplit(url)
         if parts.scheme == "https":
-            assert kwargs["ssl"] is False
+            assert kwargs["ssl"] is CAMERA_TLS
             if self.drops:
                 self.drops -= 1
                 raise OSError("connection reset")
@@ -288,6 +289,20 @@ class VigiSetupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(m.posix_tz("Asia/Kolkata", now), "UTC-5:30")
         self.assertEqual(m.posix_tz("America/New_York", now), "UTC+5")
         self.assertEqual(m.posix_tz("Nowhere/City", now), "UTC-8")
+
+
+class CameraTlsTests(unittest.TestCase):
+    def test_camera_tls_takes_rsa_key_exchange_without_verifying(self):
+        # VIGI C340S answers only TLS 1.2 AES256-GCM-SHA384 with a 1024-bit
+        # self-signed key; Python's default ciphers refuse that handshake.
+        import ssl
+
+        tls = CAMERA_TLS
+        self.assertEqual(tls.verify_mode, ssl.CERT_NONE)
+        self.assertFalse(tls.check_hostname)
+        names = {cipher["name"] for cipher in tls.get_ciphers()}
+        self.assertIn("AES256-GCM-SHA384", names)
+        self.assertIn("ECDHE-RSA-AES256-GCM-SHA384", names)
 
 
 if __name__ == "__main__":

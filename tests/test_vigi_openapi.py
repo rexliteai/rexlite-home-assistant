@@ -35,6 +35,7 @@ openapi_module = sys.modules[f"{package.__name__}.vigi_openapi"]
 gate_module = sys.modules[f"{package.__name__}.lpr_gate"]
 bridge_module = sys.modules[f"{package.__name__}.frigate_bridge"]
 CameraError = sys.modules[f"{package.__name__}.camera_probe"].CameraError
+CAMERA_TLS = sys.modules[f"{package.__name__}.camera_probe"].CAMERA_TLS
 
 CAMERA = "insight_lpr345z"
 HOST = "192.168.2.180"
@@ -128,7 +129,7 @@ class Camera:
             return Response(404, "")
         if parts.port != 20443 or parts.hostname != HOST or not self.openapi:
             raise OSError("connection refused")
-        assert kwargs["ssl"] is False
+        assert kwargs["ssl"] is CAMERA_TLS
         assert kwargs["headers"]["Connection"] == "close"
         body = json.loads(kwargs["data"])
         if body["method"] == "doAuth":

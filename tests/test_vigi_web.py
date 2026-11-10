@@ -25,6 +25,7 @@ from test_vigi_setup import SPKI, decrypt
 
 web_module = sys.modules[f"{package.__name__}.vigi_web"]
 CameraError = sys.modules[f"{package.__name__}.camera_probe"].CameraError
+CAMERA_TLS = sys.modules[f"{package.__name__}.camera_probe"].CAMERA_TLS
 ZONE = web_module.zone_of("Asia/Taipei")
 NONCE = "CgDgvECK"
 STOK = "uc5!PvP0aA!Cw*v(W"
@@ -114,7 +115,7 @@ class WebCamera(Camera):
             return super().request(method, url, **kwargs)
         if parts.hostname != HOST:
             raise OSError("connection refused")
-        assert kwargs["ssl"] is False
+        assert kwargs["ssl"] is CAMERA_TLS
         body = json.loads(kwargs["data"])
         if parts.path == "/":
             return Response(200, self.anonymous(body))

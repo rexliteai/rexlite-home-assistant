@@ -17,6 +17,7 @@ import ipaddress
 import os
 import re
 import socket
+import ssl
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -496,6 +497,28 @@ def authorization(
         token = base64.b64encode(f"{username}:{password}".encode()).decode()
         return f"Basic {token}"
     return None
+
+
+def _camera_tls() -> ssl.SSLContext:
+    """TLS for a camera's own HTTPS API on the LAN, certificate unchecked.
+
+    Cameras ship self-signed certificates, so nothing is verified (as with
+    ``ssl=False``). Unlike ``ssl=False``, the ciphers are OpenSSL's full list:
+    Python's default only offers ECDHE/DHE key exchange, and a VIGI C340S
+    (fw 2026) answers just TLS 1.2 ``AES256-GCM-SHA384`` (RSA key exchange)
+    with a 1024-bit key, so the handshake failed and a factory-fresh camera
+    looked unreachable (sign-in instead of one-tap activation).
+    """
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.set_ciphers("DEFAULT:@SECLEVEL=0")
+    return context
+
+
+# One context for every camera HTTPS call (VIGI web API, OpenAPI, activation).
+CAMERA_TLS = _camera_tls()
 
 
 def _timeout(seconds: float) -> Any:
