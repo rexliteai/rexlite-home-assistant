@@ -22,6 +22,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import json
 import re
 import secrets
@@ -312,22 +313,55 @@ async def _activate_openapi(session: Any, host: str, password: str, key: str) ->
     return _error(reply) or 0
 
 
-async def _activate_web(session: Any, host: str, password: str) -> int:
-    """The camera web page's anonymous ``set_password``; the camera's error code."""
+# The C340S web page's own request refuses the C540V fields with -50934.
+ALREADY_SET = -50932
+# Salt the VIGI web page uses for the MD5 copy of the password (``md5AuthPwd``).
+_AUTH_SALT = "TPCQ75NF2Y:"
 
-    request: dict[str, Any] = {
+
+def _md5_auth(password: str) -> str:
+    return hashlib.md5(f"{_AUTH_SALT}{password}".encode()).hexdigest().upper()  # noqa: S324 - the camera's own scheme
+
+
+async def _activate_web(session: Any, host: str, password: str) -> int:
+    """The camera web page's anonymous ``set_password``; the camera's error code.
+
+    Two dialects: the C540V page (encrypted empty email, ``pwd_sec_type`` and
+    three unanswered security questions), and the newer page the C340S ships
+    (fw 2026: an MD5 copy in ``password`` with ``passwdType: md5``, a plain
+    empty email, no questions, as its "Skip" button sends). The C340S answers
+    the first with -50934, so the second follows whenever the first fails.
+    """
+
+    language = await _language(session, host)
+    legacy: dict[str, Any] = {
         "username": USERNAME,
         "ciphertext": encrypt(password),
         "reset_pwd_email": encrypt(""),
         "pwd_sec_type": "1",
-        "language": await _language(session, host),
+        "language": language,
     }
     for index, question in enumerate(_QUESTIONS, start=1):
-        request[f"sec_question_{index}"] = question
-        request[f"sec_answer_{index}"] = ""
-    reply = await _call(session, host, {"method": "do", "set_password": request}, 15)
-    code = reply.get("error_code")
-    return code if isinstance(code, int) else -1
+        legacy[f"sec_question_{index}"] = question
+        legacy[f"sec_answer_{index}"] = ""
+    md5: dict[str, Any] = {
+        "username": USERNAME,
+        "password": _md5_auth(password),
+        "ciphertext": encrypt(password),
+        "reset_pwd_email": "",
+        "passwdType": "md5",
+        "language": language,
+    }
+    code = -1
+    for request in (legacy, md5):
+        reply = await _call(
+            session, host, {"method": "do", "set_password": request}, 15
+        )
+        value = reply.get("error_code")
+        code = value if isinstance(value, int) else -1
+        if code in (0, ALREADY_SET):
+            break
+    return code
 
 
 async def vigi_activate(
@@ -359,6 +393,10 @@ async def vigi_activate(
         code = await _activate_openapi(session, host, password, key)
     if code != 0 and web == "uninitialized":
         code, method = await _activate_web(session, host, password), "web"
+    if code == ALREADY_SET:
+        raise CameraError(
+            "camera_already_active", "攝影機已開通，請輸入開通時設定的密碼"
+        )
     if code != 0:
         raise CameraError(
             "camera_activate_failed", f"開通失敗（{code}），請到攝影機網頁開通"
