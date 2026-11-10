@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 import sys
@@ -106,6 +107,8 @@ class Camera:
     ):
         self.initialized = initialized
         self.vigi = vigi
+        self.md5_only = False
+        self.attempts: list[dict] = []
         # InSight-style: the documented OpenAPI initialisation on /openapi/initialize.
         self.openapi = openapi
         self.method = ""
@@ -174,7 +177,14 @@ class Camera:
                 "error_code": 0,
             }
         if "set_password" in body:
-            self.received = body["set_password"]
+            request = body["set_password"]
+            self.attempts.append(request)
+            if self.initialized:
+                return {"error_code": -50932}
+            # A C340S page wants the MD5 copy and refuses the C540V fields.
+            if self.md5_only and request.get("passwdType") != "md5":
+                return {"error_code": -50934}
+            self.received = request
             self.password = decrypt(self.received["ciphertext"])
             self.initialized = True
             return {"error_code": 0}
@@ -221,6 +231,32 @@ class VigiSetupTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(PASSWORD, json.dumps(camera.received))
         self.assertIn("<tt:TZ>UTC-8</tt:TZ>", camera.clock)
         self.assertNotIn(PASSWORD, json.dumps(result))
+
+    async def test_c340s_page_activation_with_md5_copy(self):
+        # VIGI C340S (fw 2026): the C540V request gets -50934, the page's own
+        # request (MD5 copy, plain empty email, no questions) sets it.
+        camera = Camera()
+        camera.md5_only = True
+        result = await m.vigi_activate(camera, HOST, PASSWORD, time_zone="Asia/Taipei")
+        self.assertEqual((result["activated"], result["method"]), (True, "web"))
+        self.assertEqual(len(camera.attempts), 2)
+        sent = camera.received
+        self.assertEqual(camera.password, PASSWORD)
+        self.assertEqual(sent["passwdType"], "md5")
+        self.assertEqual(
+            sent["password"],
+            hashlib.md5(f"TPCQ75NF2Y:{PASSWORD}".encode()).hexdigest().upper(),
+        )
+        self.assertEqual(sent["reset_pwd_email"], "")
+        self.assertNotIn("sec_question_1", sent)
+        self.assertNotIn("pwd_sec_type", sent)
+        self.assertNotIn(PASSWORD, json.dumps(camera.attempts))
+
+    async def test_c540v_activation_sends_one_request(self):
+        camera = Camera()
+        await m.vigi_activate(camera, HOST, PASSWORD, time_zone="Asia/Taipei")
+        self.assertEqual(len(camera.attempts), 1)
+        self.assertNotIn("passwdType", camera.received)
 
     async def test_openapi_initialisation_with_the_camera_key(self):
         # An InSight camera: its web API says nothing either way, OpenAPI does.
