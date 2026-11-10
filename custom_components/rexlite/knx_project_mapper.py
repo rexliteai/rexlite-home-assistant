@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 16
+MAPPER_REVISION = 17
 
 # DPT 5.100 "fan stage": GVS BTPG air-conditioner gateways (REXLiTE ETS App
 # 0.35.0) and the HERA 7TS/3TS screens send 0 for auto and 1..4 for low,
@@ -264,6 +264,12 @@ TELEMETRY_DPTS = MEASUREMENT_DPTS | {
     (14, 56),
     (14, 76),
 }
+# A name that says "light" (0.1.51): 燈 / 照明, or "light" anywhere, any case.
+# An English REXLiTE ETS App (0.43.15) names lights Light1, DimLight1,
+# TunableLight1; the old \blight\b missed them (a digit or letter right after
+# "light" is no word boundary). Only the name-based paths read it: for the
+# App's projects the ETS Function type (FT-1 / FT-6) still decides.
+LIGHT_NAME = re.compile(r"燈|照明|light", re.IGNORECASE)
 LIGHT_TYPES = {"switchablelight", "dimmablelight", "light", "ft1", "ft6"}
 COVER_TYPES = {"sunprotection", "cover", "blinds", "ft7"}
 CLIMATE_TYPES = {
@@ -657,7 +663,7 @@ class _Planner:
                 fields.pop(f"{feature}_state_address", None)
         # A proven brightness or colour-temperature channel is a dimmable
         # light even when the terse installer name carries no light word.
-        named_light = bool(re.search(r"燈|照明|\blight\b", name, re.IGNORECASE))
+        named_light = bool(LIGHT_NAME.search(name))
         is_light = named_light or bool(
             {"brightness_address", "color_temperature_address"} & fields.keys()
         )
@@ -1235,11 +1241,7 @@ class _Planner:
                 grouped[key].append((role, address))
         for key, refs in sorted(grouped.items()):
             name = names[key]
-            kind = (
-                "light"
-                if re.search(r"燈|照明|\blight\b", name, re.IGNORECASE)
-                else "switch"
-            )
+            kind = "light" if LIGHT_NAME.search(name) else "switch"
             self._group(name, kind, refs, "exact-name-role")
 
     def fallback(self) -> None:

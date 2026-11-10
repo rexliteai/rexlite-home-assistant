@@ -1015,6 +1015,30 @@ class KNXProjectMappingTests(unittest.TestCase):
         )
         self.assertNotIn("cover", result["config"])
 
+    def test_light_word_glued_to_a_number_or_word_still_names_a_light(self):
+        # 0.1.51: English REXLiTE ETS App default names (Light1, DimLight1) and
+        # names like DownLight carry "light" without a word boundary.
+        for name in ("Light1", "DimLight1", "TunableLight1", "DownLight", "LIGHT 2"):
+            with self.subTest(name=name):
+                result = mapper.plan_project(
+                    project(
+                        ga("1/0/1", f"Living {name} - Command", 1, 1),
+                        ga("1/0/2", f"Living {name} - Status", 1, 1),
+                    )
+                )
+                self.assertNotIn("switch", result["config"])
+                self.assertEqual(result["config"]["light"][0]["address"], "1/0/1")
+
+    def test_a_name_without_a_light_word_stays_a_switch(self):
+        result = mapper.plan_project(
+            project(
+                ga("1/0/1", "Living Socket1 - Command", 1, 1),
+                ga("1/0/2", "Living Socket1 - Status", 1, 1),
+            )
+        )
+        self.assertNotIn("light", result["config"])
+        self.assertEqual(result["config"]["switch"][0]["address"], "1/0/1")
+
     def test_command_status_labels_map_one_dimmable_light(self):
         result = mapper.plan_project(
             project(

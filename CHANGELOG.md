@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.51
+
+- KNX：名稱判斷「是不是燈」改成含 `燈`／`照明`／`light`（**不分大小寫，前後可以緊接字母或數字**）。REXLiTE ETS App 0.43.15 在英文 ETS 介面給英文預設名稱 `Light1`、`DimLight1`、`TunableLight1`；以前的 `\blight\b` 因為 `light` 後面緊接數字或字母沒有字邊界，比對不到。只影響**靠名稱**分類的路徑（縮寫名稱方言、名稱＋角色後綴）；App 產的專案看 ETS Function 類型（FT-1／FT-6），輸出不變。
+- `MAPPER_REVISION` 16 → 17：非 App 專案裡名稱像 `Light1`、`DownLight` 的開關迴路，從 HA `switch` 變成 `light`（升版後重新部署）。
+
 ## 0.1.50
 
 - KNX：乾接點窗簾（REXLiTE KNX Contract `CurtainImpulse`）**沒有 `關脈衝` 也是一個 `cover`**（REXLiTE ETS App 0.43.8，SI 回饋 2026-11-06）：執行器的「關」通道本來就聽 `上下` 位址（下＝1），另外的關脈衝位址從沒有人送過，新專案不再建立。有 `開脈衝`＋`停脈衝`＋牆面按鍵位址（`上下`、`停止`）就輸出 cover，`開脈衝`／`停脈衝`列 `function_role_not_exposed`。舊專案（有 `關脈衝`）輸出不變。
