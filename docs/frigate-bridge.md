@@ -61,6 +61,15 @@
 - go2rtc 串流網址的帳密以百分比編碼；Frigate 自己的 ffmpeg／ffprobe 路徑（無 go2rtc 時）用原始帳密，因為 Frigate 會再編碼一次。
 - 帳密只寫入主機上的 Frigate 設定；不寫入 HA 儲存、工作紀錄、結果或錯誤訊息。
 
+### 擷取看門狗（自動重啟 Frigate）
+
+Frigate 0.16 每次 ffmpeg 重開都會漏掉檔案描述元；攝影機串流偶爾斷線（重開機、網路抖動、改畫質）累積幾週後，看門狗執行緒停止，這台攝影機一直 0 fps（平台顯示離線），但攝影機本身、go2rtc 即時影像、ONVIF 設定都正常，只有重啟 Frigate 會恢復（2026-11-13 Nick 林口設備，Frigate 已跑 19.7 天）。
+
+- HA 每 60 秒檢查一次（`check_capture`）：啟用中、非範例的攝影機連續 `STALL_SECONDS`（300 秒）沒有畫面，且它的 RTSP 埠（來源網址的 port，預設 554）連得上，就 `POST /api/restart`。
+- 攝影機 RTSP 埠連不上＝真的離線（斷電、拔線），不重啟，免得中斷其他攝影機錄影。
+- 有攝影機作業（加入、移除、設定）進行中不檢查；重啟沒有用時拉長間隔：30 分、1、2、4、8 小時；所有攝影機恢復畫面後歸零。
+- `status` 的 `frigate.recovery` 帶最近一次自動重啟 `{camera, at}`（HA 重開後清空）；HA log 也有一行 warning。
+
 ### camera_info／camera_control（攝影機本身設定）
 
 - 帳密：主機從本機 Frigate 的 `/api/config/raw` 讀這台攝影機的 `onvif` 帳密，沒有則用它的 go2rtc restream 或 ffmpeg 網址裡的帳密；只用於這次請求，不寫入 HA、不回傳、不出現在錯誤訊息。帳密含 Frigate 環境變數（`{FRIGATE_…}`）時回 `camera_credentials_missing`；攝影機改過密碼回 `camera_auth_failed`（請移除後重新加入）。

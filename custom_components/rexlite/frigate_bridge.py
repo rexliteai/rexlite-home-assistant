@@ -31,6 +31,16 @@ thread died and the camera stayed without frames until Frigate restarted. A
 small detect stream at 5 fps costs little CPU. ``[]`` and not ``""``: an
 empty string makes ``/api/config/set`` delete the key, back to ``auto``.
 
+Frigate 0.16 leaks file descriptors on every ffmpeg restart. A camera whose
+stream drops now and then (a reboot, a network blip, an encoder change) adds
+up over weeks; once the descriptors run out the camera watchdog thread dies
+and the camera stays at 0 fps until Frigate restarts, while the camera itself,
+go2rtc live view and ONVIF settings still work (Nick hub, 2026-11-13, after 19
+days of uptime). ``check_capture`` runs every minute: a camera that is enabled,
+answers on its RTSP port and has had no frames for ``STALL_SECONDS`` gets
+Frigate restarted, at most once per ``RECOVERY_BACKOFF`` step, so a camera that
+a restart cannot fix never restarts Frigate more than a few times a day.
+
 Camera settings (recording, detection, retention, tracked objects) change
 live through Frigate's update topics, except switching recording on: Frigate
 only gives an ffmpeg process its recording output when recording was enabled
@@ -63,6 +73,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable, Iterable
@@ -105,6 +116,8 @@ from .vigi_openapi import (
 from .vigi_setup import vigi_activate, vigi_state
 from .vigi_web import VigiWeb, merge_rows, plan_sync, zone_of
 
+_LOGGER = logging.getLogger(__name__)
+
 DATA_KEY = "rexlite_frigate"
 STORE_KEY = "rexlite.frigate"
 PLATE_STORE_KEY = "rexlite.lpr"
@@ -133,6 +146,13 @@ _CAMERA = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # Labels of Frigate's default COCO model an installer can choose to track.
 TRACKABLE_OBJECTS = ("person", "car", "motorcycle", "bicycle", "dog", "cat")
 MAX_RETAIN_DAYS = 365
+# A camera with no frames this long while its RTSP port answers means
+# Frigate's capture is stuck: restart Frigate (see the module docstring).
+STALL_SECONDS = 300
+CAPTURE_CHECK_SECONDS = 60
+# Wait between automatic restarts, longer each time one did not help.
+RECOVERY_BACKOFF = (1800, 3600, 7200, 14400, 28800)
+DEFAULT_RTSP_PORT = 554
 # Remembered camera passwords kept per hub (oldest go first).
 MAX_CREDENTIALS = 200
 
@@ -450,6 +470,48 @@ def camera_hosts(name: str, camera: dict, streams: dict) -> set[str]:
     return hosts
 
 
+def camera_endpoints(name: str, camera: dict, streams: dict) -> set[tuple[str, int]]:
+    """Each camera ``(host, RTSP port)`` a Frigate camera reads from."""
+
+    sources: list[Any] = []
+    ffmpeg = camera.get("ffmpeg") if isinstance(camera.get("ffmpeg"), dict) else {}
+    for item in ffmpeg.get("inputs") or []:
+        path = str(item.get("path") or "") if isinstance(item, dict) else ""
+        sources.append(path)
+        with contextlib.suppress(ValueError):
+            restream = urlsplit(path).path.strip("/")
+            if _host_of(path) == "" and restream in streams:
+                sources.append(streams[restream])
+    if name in streams:
+        sources.append(streams[name])
+    endpoints: set[tuple[str, int]] = set()
+    for source in sources:
+        for item in source if isinstance(source, list) else [source]:
+            with contextlib.suppress(ValueError):
+                parts = urlsplit(str(item or "").split("#", 1)[0])
+                host = parts.hostname or ""
+                if parts.scheme.startswith("rtsp") and host not in (
+                    "",
+                    "127.0.0.1",
+                    "localhost",
+                ):
+                    endpoints.add((host, parts.port or DEFAULT_RTSP_PORT))
+    return endpoints
+
+
+async def _port_open(host: str, port: int, seconds: float = 3) -> bool:
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), seconds
+        )
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+    return True
+
+
 def is_placeholder(name: str, camera: dict) -> bool:
     inputs = (camera.get("ffmpeg") or {}).get("inputs") or []
     paths = {str(i.get("path")) for i in inputs if isinstance(i, dict)}
@@ -576,6 +638,8 @@ class FrigateBridge:
         fire_event: Callable[[dict], None] | None = None,
         http_port: Callable[[], int] | None = None,
         arp_table: Callable[[], Any] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        port_open: Callable[[str, int], Any] | None = None,
     ) -> None:
         self.store = store
         self.session = session
@@ -617,6 +681,15 @@ class FrigateBridge:
         # Camera IP → MAC, from discovery and the hub's ARP table.
         self.arp_table = arp_table
         self.macs: dict[str, str] = {}
+        # Capture watchdog: when each camera was first seen without frames,
+        # the last automatic restart and how many in a row did not help.
+        self.clock = clock
+        self.port_open = port_open or _port_open
+        self.stalled: dict[str, float] = {}
+        self.recovered_at: float | None = None
+        self.recoveries = 0
+        self.last_recovery: dict | None = None
+        self.capture_lock = asyncio.Lock()
 
     # Storage ---------------------------------------------------------------
 
@@ -697,6 +770,8 @@ class FrigateBridge:
             "uptime": _int(service.get("uptime")),
             "restream": restream,
         }
+        if self.last_recovery:
+            result["frigate"]["recovery"] = dict(self.last_recovery)
         result["cameras"] = self._cameras(config, stats)
         return result
 
@@ -733,6 +808,87 @@ class FrigateBridge:
                 }
             )
         return sorted(listed, key=lambda c: (c["placeholder"], c["label"].lower()))
+
+    # Capture watchdog ------------------------------------------------------
+
+    async def check_capture(self) -> str | None:
+        """Restart Frigate when a reachable camera's capture is stuck.
+
+        Returns the camera that caused a restart. See the module docstring.
+        """
+
+        if self.capture_lock.locked():
+            return None
+        async with self.capture_lock:
+            return await self._check_capture()
+
+    async def _check_capture(self) -> str | None:
+        if self.active is not None and not self.active.done():
+            # A camera job restarts Frigate itself; start counting afresh.
+            self.stalled.clear()
+            return None
+        try:
+            api = await self.api()
+            config = await api.config()
+            stats = await api.stats()
+        except FrigateError:
+            self.stalled.clear()
+            return None
+        now = self.clock()
+        cameras = (
+            config.get("cameras") if isinstance(config.get("cameras"), dict) else {}
+        )
+        go2rtc = config.get("go2rtc") if isinstance(config.get("go2rtc"), dict) else {}
+        streams = (
+            go2rtc.get("streams") if isinstance(go2rtc.get("streams"), dict) else {}
+        )
+        live = stats.get("cameras") if isinstance(stats.get("cameras"), dict) else {}
+        dark: dict[str, dict] = {}
+        for name, camera in cameras.items():
+            if (
+                not isinstance(camera, dict)
+                or camera.get("enabled") is False
+                or is_placeholder(name, camera)
+            ):
+                continue
+            current = live.get(name) if isinstance(live.get(name), dict) else {}
+            if not float(current.get("camera_fps") or 0):
+                dark[name] = camera
+        self.stalled = {name: self.stalled.get(name, now) for name in dark}
+        if not dark:
+            self.recovered_at, self.recoveries = None, 0
+            return None
+        if self.recovered_at is not None:
+            step = RECOVERY_BACKOFF[min(self.recoveries, len(RECOVERY_BACKOFF)) - 1]
+            if now - self.recovered_at < step:
+                return None
+        for name, since in self.stalled.items():
+            if now - since < STALL_SECONDS:
+                continue
+            endpoints = camera_endpoints(name, dark[name], streams)
+            # A camera that is off or unplugged is really offline: a restart
+            # would only interrupt the other cameras.
+            if not endpoints or not any(
+                [await self.port_open(host, port) for host, port in endpoints]
+            ):
+                continue
+            try:
+                await api.restart()
+            except FrigateError as err:
+                _LOGGER.warning("Frigate restart for %s failed: %s", name, err.message)
+                return None
+            _LOGGER.warning(
+                "Frigate had no frames from %s for %d s while the camera answers;"
+                " restarted Frigate",
+                name,
+                int(now - since),
+            )
+            self.recovered_at = now
+            self.recoveries += 1
+            self.stalled.clear()
+            self.last_recovery = {"camera": name, "at": _now()}
+            return name
+        return None
 
     # Discovery and probing ---------------------------------------------------
 
@@ -2358,6 +2514,24 @@ def register_frigate_bridge(hass: Any) -> FrigateBridge:
             getattr(getattr(hass, "http", None), "server_port", None) or 8123
         ),
         arp_table=lambda: hass.async_add_executor_job(read_arp),
+    )
+
+    from datetime import timedelta
+
+    from homeassistant.helpers.event import async_track_time_interval
+
+    async def check_capture(_now: Any) -> None:
+        try:
+            await bridge.check_capture()
+        except Exception:  # noqa: BLE001 - the next minute tries again
+            _LOGGER.exception("Frigate capture check failed")
+
+    async_track_time_interval(
+        hass,
+        check_capture,
+        timedelta(seconds=CAPTURE_CHECK_SECONDS),
+        name="REXLiTE Frigate capture check",
+        cancel_on_shutdown=True,
     )
 
     def handler(name: str, schema: dict, run: Callable):

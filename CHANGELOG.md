@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.55
+
+- 攝影機：**Frigate 擷取卡住時自動重啟 Frigate**。Frigate 0.16 每次 ffmpeg 重開都漏掉檔案描述元，攝影機串流偶爾斷線累積幾週後看門狗執行緒停止，攝影機一直 0 fps、平台顯示「離線」，但攝影機本身、即時影像、ONVIF 設定都正常（2026-11-13 Nick 林口設備 VIGI C540V，Frigate 已跑 19.7 天）。HA 每分鐘檢查：啟用中的攝影機連續 5 分鐘沒畫面、且 RTSP 埠連得上，就重啟 Frigate；連不上（真的離線）不重啟。重啟沒用時間隔拉長（30 分→8 小時），恢復後歸零；攝影機作業進行中不檢查。
+- `rexlite/frigate/status` 的 `frigate.recovery` 帶最近一次自動重啟的攝影機與時間。
+
 ## 0.1.54
 
 - KNX：**接在 KNX-MQTT 閘道（GVS BTIC-00/01.1）上的冷氣、全熱交換器、除濕機不出 KNX 實體**（REXLiTE ETS App 0.44.0，2026-11-13：公司之後採購 BTIC 取代 IP router）。BTIC 自己經 MQTT 把它們給 HA；mapper 再出 KNX `climate`／`fan` 會重複，日立的原值也會讀錯。Function 的位址只要連到 order number `BTIC-…` 裝置的物件，整個 Function 列 `skipped`，原因 `provided_by_mqtt_gateway`。
