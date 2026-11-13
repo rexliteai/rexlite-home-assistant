@@ -311,6 +311,49 @@ def has_ha_distribution():
     return True
 
 
+# REXLiTE ETS App 0.44.0 (方案 B, as 大山百里's 1.2.30): Hitachi's own codes on the
+# bus - the mode a DPT 5.010 counter, the fan speed too.
+HITACHI_AIRCON = [
+    ("開關", (1, 1), "", False),
+    ("狀態", (1, 1), "", True),
+    ("模式", (5, 10), "", False),
+    ("模式狀態", (5, 10), "", True),
+    ("風速", (5, 10), "", False),
+    ("風速狀態", (5, 10), "", True),
+    ("設定溫度", (9, 1), "", False),
+    ("設定溫度狀態", (9, 1), "", True),
+    ("室溫", (9, 1), "", True),
+]
+HEAT_EXCHANGER = [
+    ("開關", (1, 1), "SwitchOnOff", False),
+    ("狀態", (1, 1), "InfoOnOff", True),
+    ("風量", (5, 10), "", False),
+    ("風量狀態", (5, 10), "", True),
+]
+
+
+def on_devices(p, devices, order_numbers, gateway=None):
+    """Put the objects of the given devices on one device and name its product;
+    with `gateway`, also link every one of their addresses to a GVS BTIC."""
+    p["devices"] = {
+        address: {"order_number": order} for address, order in order_numbers.items()
+    }
+    for key, obj in list(p["communication_objects"].items()):
+        if obj["device_address"] in devices:
+            obj["device_address"] = devices[obj["device_address"]]
+            if gateway:
+                p["communication_objects"][f"{gateway}/{key}"] = {
+                    **obj,
+                    "device_address": gateway,
+                    "flags": {
+                        **obj["flags"],
+                        "write": not obj["flags"]["write"],
+                        "transmit": True,
+                    },
+                }
+    return p
+
+
 def contract_aircon(fan, fan_state):
     """The Contract v1 冷氣 loop with its fan members of the given DPTs."""
     _, name, members = next(loop for loop in CONTRACT_V1_LOOPS if loop[0] == "FT-0")
@@ -766,6 +809,81 @@ class KNXProjectMappingTests(unittest.TestCase):
         self.assertEqual(fan["state_address"], table[(name, "風量狀態")])
         self.assertEqual(fan["max_step"], 3)
         self.assertEqual(result["skipped"], [])
+
+    def test_a_function_the_mqtt_gateway_serves_is_not_a_knx_entity(self):
+        # REXLiTE ETS App 0.44.0: GVS BTIC-00/01.1 gives HA the air conditioners
+        # and the heat exchanger over MQTT; a KNX entity would be a second one.
+        p, table = contract_v1_project(
+            [
+                ("FT-0", "1F-客廳-冷氣", HITACHI_AIRCON),
+                ("FT-10", "1F-客廳-全熱交換器", HEAT_EXCHANGER),
+            ]
+        )
+        on_devices(
+            p,
+            {"1.1.1": "1.1.2", "1.1.2": "1.1.2"},
+            {"1.1.1": "BTIC-00/01.1", "1.1.2": "BTPG-04/03.1"},
+            gateway="1.1.1",
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("climate", result["config"])
+        self.assertNotIn("fan", result["config"])
+        reasons = {item["address"]: item["reason"] for item in result["skipped"]}
+        for (name, suffix), address in table.items():
+            if not name.endswith("感測器"):
+                self.assertEqual(
+                    reasons[address], "provided_by_mqtt_gateway", (name, suffix)
+                )
+
+    def test_a_daikin_air_conditioner_on_the_mqtt_gateway_is_its_too(self):
+        p, table = contract_v1_project(contract_aircon((5, 100), (5, 100)))
+        on_devices(
+            p,
+            {"1.1.1": "1.1.2"},
+            {"1.1.1": "BTIC-00/01.1", "1.1.2": "BTPG-04/03.1"},
+            gateway="1.1.1",
+        )
+        result = mapper.plan_project(p)
+        self.assertNotIn("climate", result["config"])
+        reasons = {item["address"]: item["reason"] for item in result["skipped"]}
+        for (name, suffix), address in table.items():
+            if name.endswith("冷氣1"):
+                self.assertEqual(reasons[address], "provided_by_mqtt_gateway", suffix)
+
+    def test_hitachi_raw_codes_without_the_gateway_are_not_a_knx_entity(self):
+        # A Hitachi BTPG on the old IP router: its mode address is Hitachi's
+        # 0..4, which HA's KNX climate reads as 20.105 wrong; the heat exchanger
+        # on the same gateway takes 0/4/2, which HA's fan steps cannot send.
+        p, table = contract_v1_project(
+            [
+                ("FT-0", "1F-客廳-冷氣", HITACHI_AIRCON),
+                ("FT-10", "1F-客廳-全熱交換器", HEAT_EXCHANGER),
+            ]
+        )
+        on_devices(p, {"1.1.1": "1.1.5", "1.1.2": "1.1.5"}, {"1.1.5": "BTPG-04/03.1"})
+        result = mapper.plan_project(p)
+        self.assertNotIn("climate", result["config"])
+        self.assertNotIn("fan", result["config"])
+        reasons = {item["address"]: item["reason"] for item in result["skipped"]}
+        for (name, suffix), address in table.items():
+            if not name.endswith("感測器"):
+                self.assertEqual(reasons[address], "vendor_raw_values", (name, suffix))
+
+    def test_a_raw_mode_address_is_vendor_raw_values_without_device_data(self):
+        # A fixture or export without devices: the mode address alone says so.
+        p, table = contract_v1_project([("FT-0", "1F-客廳-冷氣", HITACHI_AIRCON)])
+        result = mapper.plan_project(p)
+        self.assertNotIn("climate", result["config"])
+        reasons = {item["address"]: item["reason"] for item in result["skipped"]}
+        for (name, suffix), address in table.items():
+            if name == "1F-客廳-冷氣":
+                self.assertEqual(reasons[address], "vendor_raw_values", suffix)
+
+    def test_a_daikin_btpg_without_the_gateway_is_still_a_climate(self):
+        p, _ = contract_v1_project(contract_aircon((5, 100), (5, 100)))
+        on_devices(p, {"1.1.1": "1.1.5"}, {"1.1.5": "BTPG-04/03.1"})
+        result = mapper.plan_project(p)
+        self.assertEqual(len(result["config"]["climate"]), 1)
 
     def test_contract_heat_exchanger_without_airflow_stays_a_switch(self):
         name = "2F-客廳-全熱交換器"

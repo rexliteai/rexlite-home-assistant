@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_GROUP_ADDRESSES = 65535
 MAX_ENTITIES = 2000
-MAPPER_REVISION = 17
+MAPPER_REVISION = 18
 
 # DPT 5.100 "fan stage": GVS BTPG air-conditioner gateways (REXLiTE ETS App
 # 0.35.0) and the HERA 7TS/3TS screens send 0 for auto and 1..4 for low,
@@ -31,6 +31,21 @@ FAN_STAGE_MODE = {"fan_speed_mode": "step", "fan_max_step": 4, "fan_zero_mode": 
 # so the HERA 7TS/3TS screens (ETS App 0.43.1) and HA keep to it as well.
 # HA's KNX climate default is 7..35.
 CLIMATE_SETPOINT_RANGE = {"min_temp": 16, "max_temp": 30}
+
+# A Function whose addresses a GVS BTIC KNX-MQTT-HA gateway (BTIC-00/01.1) is
+# linked to (REXLiTE ETS App 0.44.0, user 2026-11-13: what the company buys
+# instead of the IP router): the gateway gives Home Assistant that air
+# conditioner, heat exchanger or dehumidifier itself, over MQTT. A KNX entity
+# would be a second one - and a Hitachi one reads the bus's raw codes wrong.
+MQTT_GATEWAY_ORDER = re.compile(r"^BTIC-", re.IGNORECASE)
+
+# A GVS BTPG passing Hitachi's own codes on (REXLiTE ETS App 0.44.0, as 大山百里's
+# 1.2.30 runs): its air conditioners' mode address is a DPT 5.010 counter
+# (0 cool, 1 dry, 2 fan, 3 auto, 4 heat), not KNX's 20.105, and its heat
+# exchanger's airflow 0/4/2 - neither HA's KNX climate nor its fan can drive
+# them. Without the KNX-MQTT gateway such a site's HA has none of them.
+MODBUS_GATEWAY_ORDER = re.compile(r"^BTPG-", re.IGNORECASE)
+VENDOR_MODE_DPT = (5, 10)
 
 # DPT 5.010 "風量" of a ventilation fan with its own on/off (REXLiTE KNX Contract
 # HeatExchanger, ETS App 0.43.0: a Hitachi heat exchanger behind a GVS BTPG,
@@ -419,6 +434,56 @@ class _Planner:
         self.reserved: set[str] = set()
         self.unresolved_members: set[str] = set()
         self._load()
+        devices = _dict(project.get("devices"))
+        self.mqtt_gateways = self._devices(devices, MQTT_GATEWAY_ORDER)
+        self.raw_gateways = self._raw_gateways(
+            self._devices(devices, MODBUS_GATEWAY_ORDER)
+        )
+
+    @staticmethod
+    def _devices(devices: dict, order: re.Pattern) -> set[str]:
+        return {
+            str(address)
+            for address, raw in devices.items()
+            if order.match(_label(_dict(raw).get("order_number"), ""))
+        }
+
+    def _raw_mode(self, address: str) -> bool:
+        """An air conditioner's mode address carrying a vendor's codes: its
+        name's role is the controller mode, its datapoint a 5.010 counter."""
+        parsed = _named_role(_label(self.groups.get(address, {}).get("name"), ""))
+        return bool(
+            parsed
+            and parsed[1] == "controllermode"
+            and self.dpts.get(address) == VENDOR_MODE_DPT
+        )
+
+    def _raw_gateways(self, gateways: set[str]) -> set[str]:
+        """Modbus gateways an air conditioner's raw mode address reaches: they
+        pass a vendor's own codes on, for their other loops too."""
+        raw: set[str] = set()
+        for address in self.groups:
+            if self._raw_mode(address):
+                raw |= {
+                    str(obj.get("device_address")) for obj in self.objects[address]
+                } & gateways
+        return raw
+
+    def _gateway_skip(self, addresses: set[str]) -> str | None:
+        """Why a Function is not Home Assistant's KNX entity: the KNX-MQTT
+        gateway serves it, or its values are a vendor's raw codes - its own
+        mode address says so even without device data, and a heat exchanger's
+        by the gateway it shares with such an air conditioner."""
+        devices = {
+            str(obj.get("device_address"))
+            for address in addresses
+            for obj in self.objects.get(address, [])
+        }
+        if devices & self.mqtt_gateways:
+            return "provided_by_mqtt_gateway"
+        if devices & self.raw_gateways or any(map(self._raw_mode, addresses)):
+            return "vendor_raw_values"
+        return None
 
     def _load(self) -> None:
         source = _dict(self.project.get("group_addresses"))
@@ -1219,6 +1284,23 @@ class _Planner:
                         )
                     continue
                 refs.append((role, address))
+            members = {
+                address
+                for raw_ref in _dict(function.get("group_addresses")).values()
+                if (
+                    address := self.aliases.get(
+                        str(_dict(raw_ref).get("address")),
+                        _address(_dict(raw_ref).get("address")),
+                    )
+                )
+                in self.groups
+            }
+            if skip := self._gateway_skip(members):
+                for address in members:
+                    self.issues[address] = skip
+                    self.reserved.add(address)
+                    self.non_entity_members.discard(address)
+                continue
             self._group(
                 function_name,
                 function.get("function_type", ""),
