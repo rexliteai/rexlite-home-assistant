@@ -19,7 +19,16 @@ DEFAULT_HOME_ASSISTANT_URL: Final = "http://127.0.0.1:8123"
 DEFAULT_REMOTE_ADMIN_ENABLED: Final = False
 
 PLATFORMS: Final = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SWITCH]
-INTEGRATION_VERSION: Final = "0.1.55"
+INTEGRATION_VERSION: Final = "0.1.56"
+
+# MAX'Is 雲端: this hub's backup location in the MAX'Is cloud (agent
+# "rexlite.maxis_cloud"). The operation platform keeps the files and accepts
+# the hub by its REXLiTE AI agent credential.
+MAXIS_CLOUD_BACKUP_URL: Final = (
+    "https://operation-api.maxisappai.com/api/v1/hub-cloud-backup"
+)
+MAXIS_CLOUD_BACKUP_NAME: Final = "MAX'Is 雲端"
+MAXIS_CLOUD_BACKUP_UNIQUE_ID: Final = "maxis_cloud"
 
 ATTR_ACCESS_MODE: Final = "access_mode"
 ATTR_GATEWAY_URL: Final = "gateway_url"

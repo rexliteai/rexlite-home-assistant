@@ -2,6 +2,7 @@
   "domain": "rexlite",
   "name": "REXLiTE AI",
   "after_dependencies": [
+    "backup",
     "knx",
     "mqtt",
     "network",
@@ -24,5 +25,5 @@
   "issue_tracker": "https://github.com/rexliteai/rexlite-home-assistant/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.55"
+  "version": "0.1.56"
 }

@@ -116,9 +116,14 @@ class _Entry:
         self.runtime_data: Any = None
         self.unload_callbacks: list[Any] = []
         self.reauth_requests: list[Any] = []
+        self.state_listeners: list[Any] = []
 
     def async_on_unload(self, callback: Any) -> None:
         self.unload_callbacks.append(callback)
+
+    def async_on_state_change(self, callback: Any) -> Any:
+        self.state_listeners.append(callback)
+        return self.state_listeners.clear
 
     def async_start_reauth(self, hass: Any) -> None:
         self.reauth_requests.append(hass)
@@ -140,6 +145,7 @@ class _ConfigEntriesManager:
 class _Hass:
     def __init__(self) -> None:
         self.config_entries = _ConfigEntriesManager()
+        self.data: dict[str, Any] = {}
 
 
 class _Coordinator:
@@ -191,8 +197,19 @@ class SetupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(coordinator.started)
         self.assertEqual(coordinator.config.entry_id, "entry-1")
         self.assertIs(entry.runtime_data, coordinator)
-        self.assertEqual(entry.unload_callbacks, [coordinator.async_shutdown])
+        self.assertEqual(
+            entry.unload_callbacks,
+            [coordinator.async_shutdown, entry.state_listeners.clear],
+        )
         self.assertEqual(hass.config_entries.forwarded[0][0], entry)
+
+        # HA's backup manager hears when the entry (MAX'Is 雲端) comes or goes.
+        heard: list[str] = []
+        hass.data[integration.DATA_BACKUP_AGENT_LISTENERS] = [
+            lambda: heard.append("agents changed")
+        ]
+        entry.state_listeners[0]()
+        self.assertEqual(heard, ["agents changed"])
 
     async def test_rejected_credential_triggers_home_assistant_reauth(self) -> None:
         async def reject(*args: Any, **kwargs: Any) -> None:
