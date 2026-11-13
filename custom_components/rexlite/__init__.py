@@ -37,6 +37,9 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+# HA's backup manager listens here for MAX'Is 雲端 coming or going (backup.py).
+DATA_BACKUP_AGENT_LISTENERS = f"{DOMAIN}.backup_agent_listeners"
+
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register local administrative deployment commands once per HA instance."""
@@ -109,6 +112,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: REXLiTEConfigEntry) -> b
     coordinator = REXLiTECoordinator(hass, entry, session, config)
     entry.runtime_data = coordinator
     entry.async_on_unload(coordinator.async_shutdown)
+
+    def notify_backup_agents() -> None:
+        # MAX'Is 雲端 is offered while this entry is loaded.
+        for listener in list(hass.data.get(DATA_BACKUP_AGENT_LISTENERS, [])):
+            listener()
+
+    entry.async_on_unload(entry.async_on_state_change(notify_backup_agents))
     await coordinator.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

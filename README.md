@@ -4,7 +4,7 @@
   <img src="assets/logo.png" width="250" height="100" alt="REXLiTE logo">
 </p>
 
-**目前版本：`0.1.55`**（每版變更見 [CHANGELOG.md](CHANGELOG.md)；HACS 依 GitHub Release 標籤 `vX.Y.Z` 更新）
+**目前版本：`0.1.56`**（每版變更見 [CHANGELOG.md](CHANGELOG.md)；HACS 依 GitHub Release 標籤 `vX.Y.Z` 更新）
 
 REXLiTE AI 為居家與場域提供安全、穩定的雲端服務。完成啟用後，使用者可依需求隨時開啟或關閉雲端服務，並持續掌握服務狀態。
 
@@ -60,6 +60,7 @@ REXLiTE AI `0.1.7` 新增單次上傳 ETS 工程檔流程：主機核對檔案�
 
 ## 功能
 
+- MAX’Is 雲端備份：Home Assistant 備份多一個位置「MAX'Is 雲端」（`rexlite.maxis_cloud`），由 MAX’Is 平台開關。手動與自動備份都會以主機金鑰加密後存到 MAX’Is 雲端，主機故障時可換機還原。需訂閱「雲端備份」服務。
 - 網通設備流量來源管理：將 HA 既有速率實體或 SNMP 計數器送至 MAX’Is，以 Mbps 顯示。TP-Link、Deco、VIGI、Zyxel 的來源設定與型號限制見 [網通設備流量](docs/network-traffic.md)。
 - 提供 REXLiTE AI 雲端服務與即時服務狀態。
 - 服務暫時中斷時會自動恢復，減少人工處理。
