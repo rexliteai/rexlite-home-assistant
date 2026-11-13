@@ -937,6 +937,105 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["sub"])
 
 
+class CaptureWatchTests(unittest.IsolatedAsyncioTestCase):
+    """Frigate's capture stuck at 0 fps while the camera answers (2026-11-13)."""
+
+    CAMERA = "m6d459e1198784b8fa0eec25491d50018"
+
+    def watched(self, frigate: Frigate, reachable: bool = True):
+        b = bridge(frigate)
+        self.now = 1000.0
+        self.knocks: list[tuple[str, int]] = []
+
+        async def port_open(host, port):
+            self.knocks.append((host, port))
+            return reachable
+
+        b.clock = lambda: self.now
+        b.port_open = port_open
+        return b
+
+    async def tick(self, b, seconds: float):
+        self.now += seconds
+        return await b.check_capture()
+
+    def test_camera_endpoints_follow_restreams(self):
+        self.assertEqual(
+            m.camera_endpoints(self.CAMERA, EXISTING[self.CAMERA], EXISTING_STREAMS),
+            {("192.168.2.170", 554)},
+        )
+        direct = {
+            "ffmpeg": {
+                "inputs": [
+                    {"path": "rtsp://u:p@10.0.0.9:8554/live", "roles": ["detect"]}
+                ]
+            }
+        }
+        self.assertEqual(m.camera_endpoints("x", direct, {}), {("10.0.0.9", 8554)})
+
+    async def test_a_stuck_camera_that_answers_restarts_frigate_once(self):
+        frigate = Frigate()
+        frigate.running[self.CAMERA] = 0.0
+        b = self.watched(frigate)
+        self.assertIsNone(await self.tick(b, 0))
+        self.assertIsNone(await self.tick(b, m.STALL_SECONDS - 1))
+        self.assertEqual(frigate.restarts, 0)
+        self.assertEqual(await self.tick(b, 1), self.CAMERA)
+        self.assertEqual(frigate.restarts, 1)
+        self.assertEqual(self.knocks, [("192.168.2.170", 554)])
+        # Frigate is back with frames: nothing more to do, the backoff resets.
+        frigate.restarting = 0
+        self.assertIsNone(await self.tick(b, 60))
+        self.assertEqual((b.recoveries, b.recovered_at), (0, None))
+        status = await b.status()
+        self.assertEqual(status["frigate"]["recovery"]["camera"], self.CAMERA)
+
+    async def test_a_camera_that_does_not_answer_is_left_offline(self):
+        frigate = Frigate()
+        frigate.running[self.CAMERA] = 0.0
+        b = self.watched(frigate, reachable=False)
+        await self.tick(b, 0)
+        self.assertIsNone(await self.tick(b, m.STALL_SECONDS * 3))
+        self.assertEqual(frigate.restarts, 0)
+
+    async def test_restarts_that_do_not_help_back_off(self):
+        frigate = Frigate()
+        frigate.running[self.CAMERA] = 0.0
+        b = self.watched(frigate)
+        await self.tick(b, 0)
+        self.assertEqual(await self.tick(b, m.STALL_SECONDS), self.CAMERA)
+        frigate.restarting = 0
+        frigate.running[self.CAMERA] = 0.0  # the restart did not help
+        await self.tick(b, 60)
+        self.assertIsNone(await self.tick(b, m.RECOVERY_BACKOFF[0] - 120))
+        self.assertEqual(frigate.restarts, 1)
+        self.assertEqual(await self.tick(b, 60), self.CAMERA)
+        frigate.restarting = 0
+        frigate.running[self.CAMERA] = 0.0
+        await self.tick(b, 60)
+        self.assertIsNone(await self.tick(b, m.RECOVERY_BACKOFF[0]))
+        self.assertEqual(frigate.restarts, 2)
+        self.assertEqual(await self.tick(b, m.RECOVERY_BACKOFF[1]), self.CAMERA)
+        self.assertEqual(frigate.restarts, 3)
+
+    async def test_disabled_cameras_and_running_jobs_are_left_alone(self):
+        frigate = Frigate()
+        frigate.running[self.CAMERA] = 0.0
+        frigate.config["cameras"][self.CAMERA]["enabled"] = False
+        b = self.watched(frigate)
+        await self.tick(b, 0)
+        self.assertIsNone(await self.tick(b, m.STALL_SECONDS))
+        frigate.config["cameras"][self.CAMERA]["enabled"] = True
+        b.active = asyncio.get_running_loop().create_future()  # a job owns Frigate
+        await self.tick(b, 0)
+        self.assertIsNone(await self.tick(b, m.STALL_SECONDS))
+        self.assertEqual(frigate.restarts, 0)
+        b.active.set_result(None)
+        await self.tick(b, 0)
+        self.assertIsNone(await self.tick(b, m.STALL_SECONDS - 1))
+        self.assertEqual(await self.tick(b, 1), self.CAMERA)
+
+
 class StorageTests(unittest.IsolatedAsyncioTestCase):
     async def test_running_jobs_from_before_a_restart_are_interrupted(self):
         b = bridge(
