@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.54
+
+- KNX：**接在 KNX-MQTT 閘道（GVS BTIC-00/01.1）上的冷氣、全熱交換器、除濕機不出 KNX 實體**（REXLiTE ETS App 0.44.0，2026-11-13：公司之後採購 BTIC 取代 IP router）。BTIC 自己經 MQTT 把它們給 HA；mapper 再出 KNX `climate`／`fan` 會重複，日立的原值也會讀錯。Function 的位址只要連到 order number `BTIC-…` 裝置的物件，整個 Function 列 `skipped`，原因 `provided_by_mqtt_gateway`。
+- KNX：**日立原值（照大山百里 1.2.30）的冷氣、全熱、除濕機在舊 IP router 案場也不出 KNX 實體**：BTPG（`BTPG-…`）的冷氣 `模式` 位址是 DPT 5.010（日立代碼 0 冷 1 除濕 2 送風 3 自動 4 暖），HA KNX climate／fan 都不能用；連到這台 BTPG 的 Function 列 `skipped`，原因 `vendor_raw_values`（ETS App 會警告 SI 改用 BTIC）。大金（20.105）照舊出 climate。
+- `MAPPER_REVISION` 17 → 18：這些案場的冷氣／全熱／除濕機從 HA KNX 實體消失（改由 BTIC 的 MQTT 實體提供）。
+
 ## 0.1.53
 
 - 攝影機一鍵開通：支援 **VIGI C340S** 新版網頁的開通格式。C340S 對原本（C540V）的 `set_password` 回 `-50934`；新格式照攝影機網頁「略過」按鈕送出的內容：`password` 為 `MD5("TPCQ75NF2Y:" + 密碼)` 大寫、`passwdType: "md5"`、`reset_pwd_email` 空字串、不帶安全問題。先送 C540V 格式，失敗才改送新格式，C540V 行為不變（2026-11-10 科盛公司 192.168.1.52 真機確認新格式回 0）。
