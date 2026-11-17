@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.57
+
+- **跳電紀錄**：每次 HA 重開都記下原因，跳電與其他重開分開。HA 的計畫停止（重新啟動、`docker stop`、主機關機）都會觸發 `homeassistant_stop`，REXLiTE AI 這時在 `.storage/rexlite_power_events` 蓋章，並記下前一刻是誰呼叫 `homeassistant.restart`／`stop`（HA 使用者名稱，或 `@automation`、`@system`）。下次啟動時說明上一次怎麼結束：
+  - 有蓋章：HA 或自訂整合版本變了 → `update`（`changes` 為 `名稱|舊版|新版`，空的一邊是安裝或移除）；有人呼叫重新啟動 → `manual`（`by`）；主機也重開 → `host_reboot`；其他（例如容器重啟）→ `restart`。
+  - 沒蓋章、主機沒重開 → `crash`（HA 異常中止）。
+  - 沒蓋章、主機重開（`boot_id` 變了）→ 先記 `reboot`，再用 UPnP 問區網的網路閘道器（路由器）WAN 已連線多久：閘道器是在主機最後一次寫入之後才起來 → 改記 `power`（跳電）；閘道器一直在線 → `site: up`（人為重開或當機，不算跳電）；問不到 → `site: unknown`。閘道器可能比主機晚開機，30 秒問一次、最多 10 分鐘。
+- 斷電時間取 recorder 該次最後寫入的狀態或事件，復電時間取主機開機時間（`/proc/stat` 的 `btime`）。紀錄存在 `.storage`，最多 200 筆。
+- 第一次啟動時從 recorder 的 `recorder_runs`（`closed_incorrect`）補 30 天內的未正常關機；只有最近一次能判斷，更早的記為 `unclean`。
+- 備份時（`backup.py` 的 `async_pre_backup`／`async_post_backup`）在該次執行的紀錄標 `backupAt`：還原備份（系統備援回復、換機還原）後記為 `restore`，不會誤記成跳電。
+- 新 WebSocket 指令 `rexlite/power_events`（管理員）：`{schemaVersion: 1, startedAt, hostBootAt, events: [{id, kind, lostAt, restoredAt, startedAt, by?, changes?, site?}]}`，新到舊。MAX'Is 運營平台「異常診斷 › 跳電紀錄」讀這裡。
+
 ## 0.1.56
 
 - **MAX'Is 雲端備份**：新增 Home Assistant 備份位置「MAX'Is 雲端」（`rexlite.maxis_cloud`，REXLiTE AI 設定項目載入時出現）。MAX’Is 平台在「系統備援回復」開啟「雲端備份」後，HA 的手動與自動備份都會同時存到 MAX’Is 雲端（Google Cloud Storage），一律以主機的備份金鑰加密；檔案直接上傳到儲存空間，不經過平台。從雲端還原時由 HA 自己下載。

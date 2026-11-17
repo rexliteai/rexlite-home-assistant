@@ -51,6 +51,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     from .knx_project_deployment import register_websocket_commands
     from .network_traffic_api import async_register_network_traffic
     from .node_red_bridge import register_node_red_bridge
+    from .power_events import async_register_power_events
     from .thread_border_routers import register_thread_border_routers
 
     register_device_discovery(hass)
@@ -64,6 +65,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     register_hacs_bind(hass)
     deployer = register_websocket_commands(hass)
     await async_register_network_traffic(hass)
+    try:
+        await async_register_power_events(hass)
+    except Exception:  # noqa: BLE001 - the outage record must not block the tunnel
+        _LOGGER.exception("Could not start the power outage record")
 
     async def recover_interrupted_deployment(_hass: HomeAssistant) -> None:
         await deployer.recover()

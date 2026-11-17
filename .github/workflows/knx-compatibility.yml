@@ -73,5 +73,7 @@ jobs:
         run: python tests/device_discovery_runtime_check.py
       - name: Verify network traffic services, storage and admin access
         run: python tests/network_traffic_runtime_check.py
+      - name: Verify power event record, recorder schema, storage and WebSocket
+        run: python tests/power_events_runtime_check.py
       - name: Validate real schemas, package loading, native IDs, ETS import and writer transaction
         run: python tests/knx_compatibility_runtime_check.py
