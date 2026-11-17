@@ -205,7 +205,60 @@ async def main():
             "power",
             "unclean",
         ], monitor.events
+    await production_paths()
     print(f"power events runtime check passed on Home Assistant {__version__}")
+
+
+async def production_paths():
+    """The recorder read and the UPnP calls exactly as the hub makes them."""
+    import inspect
+
+    from async_upnp_client.aiohttp import AiohttpSessionRequester
+    from async_upnp_client.client_factory import UpnpFactory
+    from async_upnp_client.profiles.igd import IgdDevice, StatusInfo
+    from async_upnp_client.search import async_search
+    from homeassistant import config_entries, loader
+    from homeassistant.helpers import recorder as recorder_helper
+    from homeassistant.setup import async_setup_component
+
+    search = inspect.signature(async_search).parameters
+    assert {"async_callback", "timeout", "search_target"} <= set(search), search
+    assert "non_strict" in inspect.signature(UpnpFactory).parameters
+    requester = inspect.signature(AiohttpSessionRequester).parameters
+    assert {"with_sleep", "timeout"} <= set(requester), requester
+    assert hasattr(IgdDevice, "async_get_status_info")
+    assert "uptime" in StatusInfo._fields
+
+    with tempfile.TemporaryDirectory() as directory:
+        hass = HomeAssistant(directory)
+        loader.async_setup(hass)
+        hass.config.skip_pip = True
+        recorder_helper.async_initialize_recorder(hass)
+        hass.config_entries = config_entries.ConfigEntries(hass, {})
+        await hass.config_entries.async_initialize()
+        database = f"sqlite:///{directory}/home-assistant_v2.db"
+        assert await async_setup_component(
+            hass, "recorder", {"recorder": {"db_url": database, "commit_interval": 0}}
+        )
+        await hass.async_start()
+        hass.states.async_set("sensor.alive", "1")
+        await hass.async_block_till_done()
+        await recorder_helper.get_instance(hass).async_block_till_done()
+        query = m.recorder_query(hass)
+        now = datetime.now(UTC)
+        runs = await query(
+            lambda s: m.recorder_unclean_runs(s, now - timedelta(days=1))
+        )
+        assert runs == [], runs
+        alive = await query(
+            lambda s: m.recorder_last_alive(
+                s, now - timedelta(hours=1), now + timedelta(hours=1)
+            )
+        )
+        assert alive is not None and abs((alive - now).total_seconds()) < 120, alive
+        version, integrations = await m.installed_versions(hass)
+        assert version == __version__ and isinstance(integrations, dict)
+        await hass.async_stop(force=True)
 
 
 if __name__ == "__main__":
