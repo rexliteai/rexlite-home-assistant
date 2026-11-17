@@ -169,3 +169,19 @@ class MaxisCloudBackupAgent(BackupAgent):
             if backup.backup_id == backup_id:
                 return backup
         raise BackupNotFound(f"Backup {backup_id} not found")
+
+
+async def async_pre_backup(hass: HomeAssistant) -> None:
+    """Mark the 跳電紀錄 run: restoring this backup must not read as a power cut."""
+    from .power_events import DATA_KEY
+
+    if monitor := hass.data.get(DATA_KEY):
+        await monitor.backing_up(True)
+
+
+async def async_post_backup(hass: HomeAssistant) -> None:
+    """The backup is written; the run is an ordinary one again."""
+    from .power_events import DATA_KEY
+
+    if monitor := hass.data.get(DATA_KEY):
+        await monitor.backing_up(False)

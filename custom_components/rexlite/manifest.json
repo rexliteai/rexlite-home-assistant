@@ -6,6 +6,7 @@
     "knx",
     "mqtt",
     "network",
+    "recorder",
     "ssdp",
     "thread",
     "zeroconf"
@@ -25,5 +26,5 @@
   "issue_tracker": "https://github.com/rexliteai/rexlite-home-assistant/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.56"
+  "version": "0.1.57"
 }
