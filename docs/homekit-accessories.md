@@ -35,3 +35,7 @@
 - 網路：`_matterc._udp`，`CM` 為 1（開機或重置後）或 2（其他控制中心開啟分享）才列；`id` 為 DNS-SD 實例名稱（16 位十六進位），`DN`／`VP`／`DT`／`D` 對應 `name`／`vendorId`+`productId`／`deviceType`／`discriminator`（沒有為 -1）。
 - 藍芽：服務資料 UUID `0xFFF6`、opcode 0，位元組 1–2 低 12 位元為鑑別碼，3–4 廠商、5–6 產品（little-endian）；5 分鐘內的廣播才列，`id` 為藍芽位址。這種設備還沒連上網路，主機要開啟 Matter 藍芽配對才能直接配對。
 - 同一台（廠商、產品、鑑別碼相同）網路與藍芽都看到時只列網路那筆。
+
+## 診斷（`diagnostics`，0.1.60）
+
+`network.adapters`（HA 網路介面，zeroconf 依此決定 IPv4／IPv6）、`network.hostIpv6`（`disabled`、`addresses[{interface, scope, address}]`）、`zeroconf.sockets[{ipv6, address}]`、`zeroconf.records`、`zeroconf.addressRecords{ipv4, ipv6}`、`zeroconf.serviceTypes`、`zeroconf.counts{服務類型: 實例數}`、`zeroconf.commissionable[{instance, txt, addresses}]`、`bluetooth{scanners, connectableScanners, advertisements, fresh, matter, homekit, names}`。看不到設備時：AAAA 為 0 或 socket 沒有 IPv6 → 主機收不到 IPv6 的 mDNS；`_matterc._udp` 為 0 而 Apple TV／Cast 有數字 → 設備沒在網路上廣播配對，或廣播被擋。

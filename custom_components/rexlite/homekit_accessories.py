@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
@@ -40,6 +41,21 @@ BLE_FRESH_SECONDS = 300
 # Models HA's HomeKit Device integration refuses (homekit_controller HOMEKIT_IGNORE).
 IGNORED_MODELS = frozenset({"T8400", "T8410", "HHKBridge1,1"})
 IPV6_ROUTE_FILE = Path("/proc/net/ipv6_route")
+IPV6_ADDRESS_FILE = Path("/proc/net/if_inet6")
+IPV6_DISABLED_FILE = Path("/proc/sys/net/ipv6/conf/all/disable_ipv6")
+# Services counted in the diagnostics; Apple TV and Cast show mDNS reaches HA at all.
+DIAGNOSTIC_TYPES = (
+    "_matterc._udp.local.",
+    "_matter._tcp.local.",
+    "_hap._tcp.local.",
+    "_hap._udp.local.",
+    "_meshcop._udp.local.",
+    "_airplay._tcp.local.",
+    "_googlecast._tcp.local.",
+)
+TYPE_A = 1
+TYPE_AAAA = 28
+IPV6_SCOPES = {0x00: "global", 0x10: "host", 0x20: "link", 0x40: "site"}
 RTF_GATEWAY = 0x0002
 PROBE_CONCURRENCY = 16
 PROBE_DEADLINE = 8
@@ -374,6 +390,200 @@ def matter_devices(
     return devices
 
 
+def ipv6_addresses(text: str) -> list[dict]:
+    """The host's IPv6 addresses (``/proc/net/if_inet6``): interface and scope."""
+    found = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 6 or len(fields[0]) != 32:
+            continue
+        try:
+            address = ip_address(int(fields[0], 16).to_bytes(16, "big"))
+            scope = int(fields[3], 16)
+        except ValueError:
+            continue
+        found.append(
+            {
+                "interface": fields[5][:32],
+                "scope": IPV6_SCOPES.get(scope, str(scope)),
+                "address": str(address),
+            }
+        )
+    return found[:24]
+
+
+def read_host_ipv6() -> dict:
+    """Whether the host runs IPv6, which Matter needs, and its IPv6 addresses."""
+    try:
+        disabled = IPV6_DISABLED_FILE.read_text(encoding="ascii").strip() == "1"
+    except (OSError, UnicodeDecodeError):
+        disabled = None
+    try:
+        addresses = ipv6_addresses(IPV6_ADDRESS_FILE.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError):
+        addresses = []
+    return {"disabled": disabled, "addresses": addresses}
+
+
+async def network_diagnostics(hass) -> dict:
+    """HA's network adapters (what its zeroconf listens on) and the host's IPv6."""
+    adapters = []
+    try:
+        from homeassistant.components import network
+
+        for adapter in await network.async_get_adapters(hass):
+            adapters.append(
+                {
+                    "name": text_value(adapter.get("name"))[:32],
+                    "enabled": bool(adapter.get("enabled")),
+                    "default": bool(adapter.get("default")),
+                    "ipv4": [
+                        text_value(item.get("address"))
+                        for item in adapter.get("ipv4") or []
+                    ][:4],
+                    "ipv6": [
+                        text_value(item.get("address"))
+                        for item in adapter.get("ipv6") or []
+                    ][:6],
+                }
+            )
+    except Exception:  # noqa: BLE001 - diagnostics never fail the listing
+        adapters = []
+    host = await hass.async_add_executor_job(read_host_ipv6)
+    return {"adapters": adapters[:8], "hostIpv6": host}
+
+
+def zeroconf_diagnostics(aiozc) -> dict:
+    """What HA's zeroconf hears: its sockets, cached records and service types."""
+    zeroconf = getattr(aiozc, "zeroconf", None)
+    engine = getattr(zeroconf, "engine", None)
+    sockets = [
+        {
+            "ipv6": bool(getattr(transport, "is_ipv6", False)),
+            "address": text_value((getattr(transport, "sock_name", None) or ("",))[0])[
+                :64
+            ],
+        }
+        for transport in list(getattr(engine, "readers", None) or [])[:12]
+    ]
+    cache = getattr(zeroconf, "cache", None)
+    records = [
+        record
+        for store in list(getattr(cache, "cache", {}).values())
+        for record in list(store)
+    ]
+    kinds = Counter(getattr(record, "type", 0) for record in records)
+    service_types = sorted(
+        {
+            text_value(getattr(record, "name", ""))
+            for record in records
+            if getattr(record, "type", 0) == TYPE_PTR
+            and text_value(getattr(record, "name", "")).endswith(
+                ("._tcp.local.", "._udp.local.")
+            )
+            and "._sub." not in text_value(getattr(record, "name", ""))
+        }
+    )
+    counts = {}
+    for service_type in DIAGNOSTIC_TYPES:
+        try:
+            pointers = cache.async_all_by_details(service_type, TYPE_PTR, CLASS_IN)
+            counts[service_type] = len({record.alias for record in pointers})
+        except Exception:  # noqa: BLE001 - an odd cache only loses its counts
+            counts[service_type] = 0
+    commissionable = []
+    try:
+        for info, _seen in cached_services(aiozc, MATTER_TYPE)[:10]:
+            properties = {
+                text_value(key).upper(): text_value(value)[:64]
+                for key, value in (info.properties or {}).items()
+            }
+            commissionable.append(
+                {
+                    "instance": text_value(info.name)[:96],
+                    "txt": {
+                        key: properties[key]
+                        for key in ("CM", "D", "VP", "DT", "DN", "PH")
+                        if key in properties
+                    },
+                    "addresses": [str(item) for item in info.parsed_addresses()][:6],
+                }
+            )
+    except Exception:  # noqa: BLE001 - diagnostics never fail the listing
+        commissionable = []
+    return {
+        "sockets": sockets,
+        "records": len(records),
+        "addressRecords": {
+            "ipv4": kinds.get(TYPE_A, 0),
+            "ipv6": kinds.get(TYPE_AAAA, 0),
+        },
+        "serviceTypes": service_types[:60],
+        "counts": counts,
+        "commissionable": commissionable,
+    }
+
+
+def bluetooth_diagnostics(hass, advertisements, now_monotonic: float) -> dict:
+    """Bluetooth scanners and what they currently hear (Matter and HomeKit counted)."""
+    try:
+        from homeassistant.components import bluetooth
+
+        scanners = bluetooth.async_scanner_count(hass, connectable=False)
+        connectable = bluetooth.async_scanner_count(hass, connectable=True)
+    except Exception:  # noqa: BLE001 - a hub without Bluetooth reports zero
+        scanners = connectable = 0
+    fresh = []
+    for info in advertisements:
+        seen = getattr(info, "time", None)
+        if isinstance(seen, (int, float)) and now_monotonic - seen > BLE_FRESH_SECONDS:
+            continue
+        fresh.append(info)
+    names = sorted(
+        {
+            text_value(getattr(info, "name", ""))[:40]
+            for info in fresh
+            if text_value(getattr(info, "name", ""))
+            and text_value(getattr(info, "name", "")).lower()
+            != text_value(getattr(info, "address", "")).lower()
+        }
+    )
+    return {
+        "scanners": scanners,
+        "connectableScanners": connectable,
+        "advertisements": len(advertisements),
+        "fresh": len(fresh),
+        "matter": sum(
+            1
+            for info in fresh
+            if MATTER_BLE_UUID in (getattr(info, "service_data", None) or {})
+        ),
+        "homekit": sum(
+            1
+            for info in fresh
+            if ble_advertisement(getattr(info, "manufacturer_data", None))
+        ),
+        "names": names[:20],
+    }
+
+
+async def homekit_diagnostics(hass, aiozc, advertisements, now_monotonic) -> dict:
+    """Why a device may be missing: host IPv6, mDNS and Bluetooth as HA sees them."""
+    try:
+        network = await network_diagnostics(hass)
+    except Exception:  # noqa: BLE001 - diagnostics never fail the listing
+        network = {}
+    try:
+        zeroconf = zeroconf_diagnostics(aiozc)
+    except Exception:  # noqa: BLE001
+        zeroconf = {}
+    try:
+        bluetooth = bluetooth_diagnostics(hass, advertisements, now_monotonic)
+    except Exception:  # noqa: BLE001
+        bluetooth = {}
+    return {"network": network, "zeroconf": zeroconf, "bluetooth": bluetooth}
+
+
 def pairable_matter(aiozc, advertisements, now_monotonic, now_wall) -> list[dict]:
     try:
         services = cached_services(aiozc, MATTER_TYPE)
@@ -551,6 +761,9 @@ async def homekit_accessories(hass) -> dict:
     return {
         "accessories": accessories,
         "matter": pairable_matter(aiozc, advertisements, now_monotonic, now_wall),
+        "diagnostics": await homekit_diagnostics(
+            hass, aiozc, advertisements, now_monotonic
+        ),
         "bluetooth": {"adapters": adapters},
         "thread": await thread_state(hass, aiozc),
         "scannedAt": iso(now_wall),
