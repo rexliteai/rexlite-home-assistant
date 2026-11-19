@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.59
+
+- **HomeKit 頁也列出等待配對的 Matter 設備**：包裝上的「Works with Apple Home」也包含 Matter 設備（Apple「家庭」列在「其他 Matter 配件」），HomeKit 裝置（HAP）配不了它們。`rexlite/homekit/accessories` 多回傳 `matter`：
+  - 網路上的 `_matterc._udp`（HA 為 Matter 整合一直在瀏覽）：只列配對視窗開著的（`CM=1` 剛開機或重置後、`CM=2` 由 Apple「家庭」等其他控制中心開啟分享），帶 `DN` 名稱、`VP` 廠商／產品代碼、`DT` 設備類型、`D` 鑑別碼與位址。
+  - 藍芽上的 Matter 配對廣播（服務資料 `0xFFF6`，5 分鐘內）：還沒連上 Wi-Fi 的設備，例如剛重置的 Tapo H110。同一台同時出現在網路與藍芽時只列網路那筆。
+  - 每筆：`{id, name, vendorId, productId, deviceType, commissioningMode, discriminator, transport: ip|ble, host, port, lastSeen}`。平台用 Matter 加入（設備的 Matter 配對碼）完成配對；REXLiTE AI 只讀取、不配對。
+
 ## 0.1.58
 
 - **HomeKit 設備**：新 WebSocket 指令 `rexlite/homekit/accessories`（管理員，唯讀），列出主機看得到的每一台 HomeKit 配件（包裝有「Works with Apple Home」標誌的設備），給 MAX'Is 運營平台「主機部署 › HomeKit」用。配對仍由 HA 內建的 HomeKit 裝置（`homekit_controller`）完成，REXLiTE AI 不改設備也不送配對碼。

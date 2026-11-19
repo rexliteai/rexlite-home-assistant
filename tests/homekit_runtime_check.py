@@ -124,6 +124,18 @@ async def main() -> None:
             sf=0,
         )
         + service(
+            "_matterc._udp.local.",
+            "8F3B2E1A2D4C6E7F",
+            "WiZ-Downlight.local.",
+            5540,
+            "192.168.68.85",
+            D=3840,
+            VP="4107+9",
+            CM=1,
+            DT=269,
+            DN="WiZ Downlight",
+        )
+        + service(
             "_hap._tcp.local.",
             "Hue Bridge 4F2A",
             "Hue-Bridge-4F2A.local.",
@@ -201,6 +213,11 @@ async def main() -> None:
             ("Eve Door 9A7B", "paired_elsewhere", "", ""),
             ("Hue Bridge 4F2A", "native", "", "hue"),
         ], listed
+        matter = [
+            (row["name"], row["transport"], row["commissioningMode"])
+            for row in result["matter"]
+        ]
+        assert matter == [("WiZ Downlight", "ip", 1)], result["matter"]
         assert isinstance(result["bluetooth"]["adapters"], int)
         thread = result["thread"]
         assert isinstance(thread["routers"], int) and thread["routers"] >= 0, thread

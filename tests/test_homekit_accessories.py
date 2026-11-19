@@ -296,5 +296,132 @@ class HelperTests(unittest.TestCase):
         self.assertEqual([item["id"][-2:] for item in kept], ["01", "04", "05"])
 
 
+def matter_service(instance="8F3B2E1A2D4C6E7F", **properties):
+    props = {
+        b"D": b"3840",
+        b"VP": b"4107+9",
+        b"CM": b"1",
+        b"DT": b"269",
+        b"DN": b"WiZ Downlight",
+    }
+    props |= {key.encode(): value for key, value in properties.items()}
+    return SimpleNamespace(
+        name=f"{instance}._matterc._udp.local.",
+        properties={key: value for key, value in props.items() if value is not None},
+        port=5540,
+        parsed_addresses=lambda: ["fe80::2", "192.168.68.85"],
+    )
+
+
+def matter_advert(discriminator=3840, vendor=4107, product=9, opcode=0x00):
+    return (
+        bytes([opcode])
+        + (discriminator & 0x0FFF).to_bytes(2, "little")
+        + vendor.to_bytes(2, "little")
+        + product.to_bytes(2, "little")
+        + b"\x00"
+    )
+
+
+class MatterTests(unittest.TestCase):
+    def test_network_device_in_its_pairing_window(self):
+        row = m.matter_service_row(matter_service(), 1763560800000)
+        self.assertEqual(
+            {k: row[k] for k in ("id", "name", "vendorId", "productId", "deviceType")},
+            {
+                "id": "8f3b2e1a2d4c6e7f",
+                "name": "WiZ Downlight",
+                "vendorId": 4107,
+                "productId": 9,
+                "deviceType": 269,
+            },
+        )
+        self.assertEqual((row["commissioningMode"], row["discriminator"]), (1, 3840))
+        self.assertEqual(
+            (row["transport"], row["host"], row["port"]), ("ip", "192.168.68.85", 5540)
+        )
+        self.assertTrue(row["lastSeen"].startswith("2025-11-19T"))
+        shared = m.matter_service_row(matter_service(CM=b"2", DN=None, VP=b"4874"))
+        self.assertEqual(
+            (shared["commissioningMode"], shared["name"], shared["productId"]),
+            (2, "", 0),
+        )
+
+    def test_closed_windows_and_bad_instances_are_skipped(self):
+        self.assertIsNone(m.matter_service_row(matter_service(CM=b"0")))
+        self.assertIsNone(m.matter_service_row(matter_service(CM=None)))
+        self.assertIsNone(m.matter_service_row(matter_service(instance="not hex!")))
+        self.assertEqual(
+            m.matter_service_row(matter_service(D=b"9999"))["discriminator"], -1
+        )
+
+    def test_bluetooth_advertisement_layout_and_freshness(self):
+        info = SimpleNamespace(
+            service_data={
+                m.MATTER_BLE_UUID: matter_advert(0xF00 | 0x0A, 0x1349, 0x0101)
+            },
+            address="AA:BB:CC:DD:EE:01",
+            name="",
+            time=990.0,
+        )
+        row = m.matter_ble_row(info, 1000.0, 1763560800.0)
+        self.assertEqual(
+            (row["id"], row["transport"], row["discriminator"]),
+            ("aa:bb:cc:dd:ee:01", "ble", 0xF0A),
+        )
+        self.assertEqual((row["vendorId"], row["productId"]), (0x1349, 0x0101))
+        self.assertIsNone(
+            m.matter_ble_row(
+                SimpleNamespace(**{**info.__dict__, "time": 600.0}), 1000.0, 0
+            )
+        )
+        self.assertIsNone(
+            m.matter_ble_row(
+                SimpleNamespace(
+                    **{
+                        **info.__dict__,
+                        "service_data": {m.MATTER_BLE_UUID: matter_advert(opcode=1)},
+                    }
+                ),
+                1000.0,
+                0,
+            )
+        )
+        self.assertIsNone(
+            m.matter_ble_row(
+                SimpleNamespace(**{**info.__dict__, "service_data": {}}), 1000.0, 0
+            )
+        )
+        self.assertIsNone(
+            m.matter_ble_row(
+                SimpleNamespace(**{**info.__dict__, "address": "uuid-like"}), 1000.0, 0
+            )
+        )
+
+    def test_one_row_per_device_network_first(self):
+        ble_same = SimpleNamespace(
+            service_data={m.MATTER_BLE_UUID: matter_advert(3840, 4107, 9)},
+            address="AA:BB:CC:DD:EE:02",
+            name="WiZ",
+            time=999.0,
+        )
+        ble_other = SimpleNamespace(
+            service_data={m.MATTER_BLE_UUID: matter_advert(1234, 4937, 42)},
+            address="AA:BB:CC:DD:EE:03",
+            name="",
+            time=999.0,
+        )
+        devices = m.matter_devices(
+            [(matter_service(), 0)], [ble_same, ble_other], 1000.0, 1763560800.0
+        )
+        self.assertEqual(
+            [(d["transport"], d["id"]) for d in devices],
+            [("ip", "8f3b2e1a2d4c6e7f"), ("ble", "aa:bb:cc:dd:ee:03")],
+        )
+
+    def test_matter_listing_failure_leaves_homekit_rows(self):
+        self.assertEqual(m.pairable_matter("not-a-zeroconf", [], 0.0, 0.0), [])
+
+
 if __name__ == "__main__":
     unittest.main()
