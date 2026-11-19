@@ -3,6 +3,7 @@
   "name": "REXLiTE AI",
   "after_dependencies": [
     "backup",
+    "bluetooth",
     "knx",
     "mqtt",
     "network",
@@ -26,5 +27,5 @@
   "issue_tracker": "https://github.com/rexliteai/rexlite-home-assistant/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.57"
+  "version": "0.1.58"
 }

@@ -48,6 +48,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     from .device_discovery import register_device_discovery
     from .frigate_bridge import async_register_plate_webhook, register_frigate_bridge
     from .hacs_bind import register_hacs_bind
+    from .homekit_accessories import register_homekit_accessories
     from .knx_project_deployment import register_websocket_commands
     from .network_traffic_api import async_register_network_traffic
     from .node_red_bridge import register_node_red_bridge
@@ -56,6 +57,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     register_device_discovery(hass)
     register_thread_border_routers(hass)
+    register_homekit_accessories(hass)
     register_node_red_bridge(hass)
     frigate = register_frigate_bridge(hass)
     try:
