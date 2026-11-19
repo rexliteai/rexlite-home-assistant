@@ -423,5 +423,119 @@ class MatterTests(unittest.TestCase):
         self.assertEqual(m.pairable_matter("not-a-zeroconf", [], 0.0, 0.0), [])
 
 
+class DiagnosticsTests(unittest.TestCase):
+    def test_host_ipv6_addresses(self):
+        text = (
+            "fe800000000000000a0027fffe8d7a3c 02 40 20 80 enp1s0\n"
+            "fd11002200000000000000000000000a 02 40 00 00 enp1s0\n"
+            "00000000000000000000000000000001 01 80 10 80 lo\n"
+            "bad line\n"
+        )
+        self.assertEqual(
+            m.ipv6_addresses(text),
+            [
+                {
+                    "interface": "enp1s0",
+                    "scope": "link",
+                    "address": "fe80::a00:27ff:fe8d:7a3c",
+                },
+                {"interface": "enp1s0", "scope": "global", "address": "fd11:22::a"},
+                {"interface": "lo", "scope": "host", "address": "::1"},
+            ],
+        )
+        with (
+            patch.object(m, "IPV6_DISABLED_FILE", Path("/nonexistent/disable_ipv6")),
+            patch.object(m, "IPV6_ADDRESS_FILE", Path("/nonexistent/if_inet6")),
+        ):
+            self.assertEqual(m.read_host_ipv6(), {"disabled": None, "addresses": []})
+
+    def test_zeroconf_view_counts_sockets_records_and_types(self):
+        pointer = SimpleNamespace(
+            type=12, name="_matterc._udp.local.", alias="AB._matterc._udp.local."
+        )
+        subtype = SimpleNamespace(
+            type=12,
+            name="_CM._sub._matterc._udp.local.",
+            alias="AB._matterc._udp.local.",
+        )
+        aaaa = SimpleNamespace(type=28, name="host.local.")
+        a = SimpleNamespace(type=1, name="tv.local.")
+        cache = SimpleNamespace(
+            cache={"k1": [pointer], "k2": [subtype], "k3": [aaaa, a]},
+            async_all_by_details=lambda name, kind, klass: (
+                [pointer] if name == "_matterc._udp.local." else []
+            ),
+        )
+        engine = SimpleNamespace(
+            readers=[
+                SimpleNamespace(is_ipv6=False, sock_name=("192.168.68.64", 5353)),
+                SimpleNamespace(is_ipv6=True, sock_name=("fe80::1", 5353, 0, 2)),
+            ]
+        )
+        aiozc = SimpleNamespace(zeroconf=SimpleNamespace(cache=cache, engine=engine))
+        with patch.object(m, "cached_services", return_value=[(matter_service(), 0)]):
+            view = m.zeroconf_diagnostics(aiozc)
+        self.assertEqual(
+            view["sockets"],
+            [
+                {"ipv6": False, "address": "192.168.68.64"},
+                {"ipv6": True, "address": "fe80::1"},
+            ],
+        )
+        self.assertEqual(
+            (view["records"], view["addressRecords"]), (4, {"ipv4": 1, "ipv6": 1})
+        )
+        self.assertEqual(view["serviceTypes"], ["_matterc._udp.local."])
+        self.assertEqual(view["counts"]["_matterc._udp.local."], 1)
+        self.assertEqual(view["counts"]["_hap._tcp.local."], 0)
+        self.assertEqual(view["commissionable"][0]["txt"]["CM"], "1")
+        self.assertEqual(
+            view["commissionable"][0]["addresses"], ["fe80::2", "192.168.68.85"]
+        )
+
+    def test_bluetooth_view_counts_fresh_matter_and_homekit(self):
+        matter = SimpleNamespace(
+            service_data={m.MATTER_BLE_UUID: b"\x00" * 8},
+            manufacturer_data={},
+            name="H110",
+            address="AA:BB:CC:DD:EE:01",
+            time=990.0,
+        )
+        hap = SimpleNamespace(
+            service_data={},
+            manufacturer_data={76: advertisement()},
+            name="aa:bb:cc:dd:ee:02",
+            address="AA:BB:CC:DD:EE:02",
+            time=995.0,
+        )
+        stale = SimpleNamespace(
+            service_data={},
+            manufacturer_data={},
+            name="Old",
+            address="AA:BB:CC:DD:EE:03",
+            time=100.0,
+        )
+        view = m.bluetooth_diagnostics(SimpleNamespace(), [matter, hap, stale], 1000.0)
+        self.assertEqual(
+            {
+                k: view[k]
+                for k in ("advertisements", "fresh", "matter", "homekit", "names")
+            },
+            {
+                "advertisements": 3,
+                "fresh": 2,
+                "matter": 1,
+                "homekit": 1,
+                "names": ["H110"],
+            },
+        )
+
+    def test_diagnostics_never_fail(self):
+        result = asyncio.run(
+            m.homekit_diagnostics(SimpleNamespace(), "not-zeroconf", [], 0.0)
+        )
+        self.assertEqual(set(result), {"network", "zeroconf", "bluetooth"})
+
+
 if __name__ == "__main__":
     unittest.main()

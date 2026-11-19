@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.60
+
+- **HomeKit／Matter 掃描附診斷**：`rexlite/homekit/accessories` 多回傳 `diagnostics`，用來查「設備在同一網路、也在配對模式，主機卻看不到」：
+  - `network`：HA 的網路介面（zeroconf 監聽的 IPv4／IPv6 位址）與主機 IPv6（`/proc/sys/net/ipv6/conf/all/disable_ipv6`、`/proc/net/if_inet6` 的位址與範圍）。Matter 的搜尋與控制都走 IPv6。
+  - `zeroconf`：HA zeroconf 的 socket（是否有 IPv6）、快取筆數、A／AAAA 位址紀錄數、看到的服務類型，以及 `_matterc._udp`、`_matter._tcp`、`_hap._tcp`、`_hap._udp`、`_meshcop._udp`、`_airplay._tcp`、`_googlecast._tcp` 的實例數；`_matterc._udp` 另列前 10 筆的 TXT（CM、D、VP、DT、DN、PH）與位址。
+  - `bluetooth`：藍芽掃描器數、目前廣播數、5 分鐘內的 Matter（0xFFF6）與 HomeKit 廣播數與名稱。
+  - 只讀取，任何一項失敗都不影響設備清單。
+
 ## 0.1.59
 
 - **HomeKit 頁也列出等待配對的 Matter 設備**：包裝上的「Works with Apple Home」也包含 Matter 設備（Apple「家庭」列在「其他 Matter 配件」），HomeKit 裝置（HAP）配不了它們。`rexlite/homekit/accessories` 多回傳 `matter`：

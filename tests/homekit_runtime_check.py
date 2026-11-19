@@ -224,6 +224,16 @@ async def main() -> None:
         assert isinstance(thread["preferredNetwork"], bool), thread
         assert thread["routes"] is None or thread["routes"] >= 0, thread
         assert result["scannedAt"]
+        diagnostics = result["diagnostics"]
+        assert diagnostics["zeroconf"]["counts"]["_matterc._udp.local."] == 1, (
+            diagnostics
+        )
+        assert diagnostics["zeroconf"]["counts"]["_hap._tcp.local."] == 2, diagnostics
+        assert diagnostics["zeroconf"]["addressRecords"]["ipv6"] == 1, diagnostics
+        assert (
+            diagnostics["zeroconf"]["commissionable"][0]["txt"]["DN"] == "WiZ Downlight"
+        )
+        assert set(diagnostics) == {"network", "zeroconf", "bluetooth"}
 
         m.register_homekit_accessories(hass)
         m.register_homekit_accessories(hass)  # Idempotent across config entry reloads.
