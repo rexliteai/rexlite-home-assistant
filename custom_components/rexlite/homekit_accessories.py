@@ -11,11 +11,18 @@ silently, so they never appear among its config flows.
   Wi-Fi accessory must also answer a TCP handshake, so a switched-off device
   whose records are still cached is left out.
 - Bluetooth accessories come from HA's advertisements carrying Apple's HAP data.
+
+"Works with Apple Home" also covers Matter devices, which Apple Home lists as
+"other Matter accessories". Those waiting to be paired are listed under
+``matter``: ``_matterc._udp`` on the network (HA browses it for its Matter
+integration) and Matter's Bluetooth advertisement for devices not on Wi-Fi yet.
+The platform pairs them with its Matter wizard and the device's setup code.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import UTC, datetime
 from ipaddress import ip_address
@@ -39,6 +46,10 @@ PROBE_DEADLINE = 8
 # DNS record type and class, as HA's Thread discovery reads its cache.
 TYPE_PTR = 12
 CLASS_IN = 1
+# Matter commissionable nodes: DNS-SD on the network, service data 0xFFF6 over BLE.
+MATTER_TYPE = "_matterc._udp.local."
+MATTER_BLE_UUID = "0000fff6-0000-1000-8000-00805f9b34fb"
+MATTER_INSTANCE = re.compile(r"[0-9a-f]{8,32}")
 
 
 def text_value(value: Any) -> str:
@@ -226,28 +237,149 @@ def read_thread_routes() -> int | None:
         return None
 
 
-async def zeroconf_rows(hass):
-    """HA's zeroconf instance and every cached ``_hap`` service on it."""
-    from homeassistant.components import zeroconf
+def cached_services(aiozc, service_type: str) -> list:
+    """(service info, PTR record time) for each fully cached instance of a type."""
     from zeroconf import BadTypeInNameException
     from zeroconf.asyncio import AsyncServiceInfo
 
+    found = []
+    records = aiozc.zeroconf.cache.async_all_by_details(
+        service_type, TYPE_PTR, CLASS_IN
+    )
+    for record in records:
+        try:
+            info = AsyncServiceInfo(service_type, record.alias)
+        except BadTypeInNameException:
+            continue
+        # Not fully cached yet: HA's browser fills it shortly.
+        if info.load_from_cache(aiozc.zeroconf):
+            found.append((info, getattr(record, "created", 0)))
+    return found
+
+
+async def zeroconf_rows(hass):
+    """HA's zeroconf instance and every cached ``_hap`` service on it."""
+    from homeassistant.components import zeroconf
+
     aiozc = await zeroconf.async_get_async_instance(hass)
-    rows: list[dict] = []
-    for service_type, transport in HAP_TYPES:
-        records = aiozc.zeroconf.cache.async_all_by_details(
-            service_type, TYPE_PTR, CLASS_IN
-        )
-        for record in records:
-            try:
-                info = AsyncServiceInfo(service_type, record.alias)
-            except BadTypeInNameException:
-                continue
-            if not info.load_from_cache(aiozc.zeroconf):
-                continue  # Not fully cached yet: HA's browser fills it shortly.
-            if row := service_row(info, transport, getattr(record, "created", 0)):
-                rows.append(row)
+    rows = [
+        row
+        for service_type, transport in HAP_TYPES
+        for info, seen in cached_services(aiozc, service_type)
+        if (row := service_row(info, transport, seen))
+    ]
     return aiozc, rows
+
+
+def matter_service_row(info, seen_ms: float = 0) -> dict | None:
+    """A Matter device announcing on the network that it can be paired.
+
+    It does so while its commissioning window is open: ``CM=1`` after power-on or
+    a reset, ``CM=2`` when another controller (Apple Home, Google Home…) opened
+    it to share the device.
+    """
+    properties = {
+        text_value(key).upper(): value
+        for key, value in (getattr(info, "properties", None) or {}).items()
+    }
+    mode = int_value(properties.get("CM"), 0)
+    if mode not in (1, 2):
+        return None
+    instance = text_value(getattr(info, "name", "")).lower()
+    suffix = "." + MATTER_TYPE
+    if instance.endswith(suffix):
+        instance = instance[: -len(suffix)]
+    if not MATTER_INSTANCE.fullmatch(instance):
+        return None
+    vendor, _, product = text_value(properties.get("VP")).partition("+")
+    discriminator = int_value(properties.get("D"), -1)
+    try:
+        addresses = list(info.parsed_addresses())
+    except Exception:  # noqa: BLE001 - a malformed record only loses its address
+        addresses = []
+    port = getattr(info, "port", 0)
+    return {
+        "id": instance,
+        "name": text_value(properties.get("DN")),
+        "vendorId": int_value(vendor, 0),
+        "productId": int_value(product, 0),
+        "deviceType": int_value(properties.get("DT"), 0),
+        "commissioningMode": mode,
+        "discriminator": discriminator if 0 <= discriminator <= 0x0FFF else -1,
+        "transport": "ip",
+        "host": lan_host(addresses),
+        "port": port if isinstance(port, int) and 0 < port < 65536 else 0,
+        "lastSeen": iso(seen_ms / 1000) if seen_ms else "",
+    }
+
+
+def matter_ble_row(info, now_monotonic: float, now_wall: float) -> dict | None:
+    """A Matter device offering pairing over Bluetooth: not on the network yet."""
+    data = (getattr(info, "service_data", None) or {}).get(MATTER_BLE_UUID)
+    # Opcode 0 = commissionable; then version/discriminator, vendor and product ids.
+    if not data or len(data) < 7 or data[0] != 0x00:
+        return None
+    seen = getattr(info, "time", None)
+    age = now_monotonic - seen if isinstance(seen, (int, float)) else None
+    if age is not None and age > BLE_FRESH_SECONDS:
+        return None
+    address = normalize_id(getattr(info, "address", ""))
+    if not address:
+        return None
+    name = text_value(getattr(info, "name", ""))
+    if name.lower() == address:
+        name = ""
+    return {
+        "id": address,
+        "name": name,
+        "vendorId": int.from_bytes(data[3:5], "little"),
+        "productId": int.from_bytes(data[5:7], "little"),
+        "deviceType": 0,
+        "commissioningMode": 1,
+        "discriminator": int.from_bytes(data[1:3], "little") & 0x0FFF,
+        "transport": "ble",
+        "host": "",
+        "port": 0,
+        "lastSeen": iso(now_wall - max(age, 0)) if age is not None else "",
+    }
+
+
+def matter_devices(
+    services, advertisements, now_monotonic: float, now_wall: float
+) -> list[dict]:
+    """Pairable Matter devices, one row each (the network row when seen both ways)."""
+    rows = [row for info, seen in services if (row := matter_service_row(info, seen))]
+    rows.extend(
+        row
+        for info in advertisements
+        if (row := matter_ble_row(info, now_monotonic, now_wall))
+    )
+    ids: set[str] = set()
+    keys: set[tuple] = set()
+    devices: list[dict] = []
+    for row in sorted(rows, key=lambda row: row["transport"] != "ip"):
+        key = (row["vendorId"], row["productId"], row["discriminator"])
+        if row["id"] in ids or (row["discriminator"] >= 0 and key in keys):
+            continue
+        ids.add(row["id"])
+        keys.add(key)
+        devices.append(row)
+    devices.sort(
+        key=lambda row: (
+            row["transport"] != "ip",
+            row["name"].lower() or "~",
+            row["id"],
+        )
+    )
+    return devices
+
+
+def pairable_matter(aiozc, advertisements, now_monotonic, now_wall) -> list[dict]:
+    try:
+        services = cached_services(aiozc, MATTER_TYPE)
+    except Exception:  # noqa: BLE001 - Matter rows are extra; HomeKit still lists
+        services = []
+    return matter_devices(services, advertisements, now_monotonic, now_wall)
 
 
 def bluetooth_state(hass) -> tuple[int, list]:
@@ -418,6 +550,7 @@ async def homekit_accessories(hass) -> dict:
     )
     return {
         "accessories": accessories,
+        "matter": pairable_matter(aiozc, advertisements, now_monotonic, now_wall),
         "bluetooth": {"adapters": adapters},
         "thread": await thread_state(hass, aiozc),
         "scannedAt": iso(now_wall),
