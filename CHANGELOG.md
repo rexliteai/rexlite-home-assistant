@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.58
+
+- **HomeKit 設備**：新 WebSocket 指令 `rexlite/homekit/accessories`（管理員，唯讀），列出主機看得到的每一台 HomeKit 配件（包裝有「Works with Apple Home」標誌的設備），給 MAX'Is 運營平台「主機部署 › HomeKit」用。配對仍由 HA 內建的 HomeKit 裝置（`homekit_controller`）完成，REXLiTE AI 不改設備也不送配對碼。
+  - Wi-Fi／有線（`_hap._tcp`）與 Thread（`_hap._udp`）讀 HA 的 zeroconf 快取（HA 一直在為 HomeKit 裝置瀏覽這兩種服務）；Wi-Fi 配件要再通過一次 TCP 連線，已關機但快取還在的不列出。藍芽讀 HA 收到、帶 Apple HAP 資料的廣播（5 分鐘內）。
+  - 每台帶 `status`：`ready`（可配對，附 HA 待加入流程的 `flowId`）、`paired_elsewhere`（已被其他控制中心配對，例如 Apple「家庭」；HA 會直接略過，不會出現在待加入，要先從「家庭」移除）、`native`（HA 改用原廠整合，`nativeDomain` 例如 `hue`）、`added`（已加入，附 `entryId`）、`ignored`（HA 不支援的型號）。這台 HA 自己的 HomeKit Bridge 不列出。
+  - 一併回報 `bluetooth.adapters`（可連線的藍芽介面數）與 `thread`：`routers`（區網上的 Thread 邊界路由器）、`preferredNetwork`（HA 有偏好的 Thread 網路）、`routes`（主機學到的 Thread 網路路由數，讀 `/proc/net/ipv6_route`；0 表示主機沒有接受 IPv6 路由公告，Thread 配件連不到；讀不到為 `null`）。
+- `manifest.json` 的 `after_dependencies` 加 `bluetooth`（HA 本來就在第一階段載入 bluetooth，不影響啟動順序）。
+
 ## 0.1.57
 
 - **跳電紀錄**：每次 HA 重開都記下原因，跳電與其他重開分開。HA 的計畫停止（重新啟動、`docker stop`、主機關機）都會觸發 `homeassistant_stop`，REXLiTE AI 這時在 `.storage/rexlite_power_events` 蓋章，並記下前一刻是誰呼叫 `homeassistant.restart`／`stop`（HA 使用者名稱，或 `@automation`、`@system`）。下次啟動時說明上一次怎麼結束：
