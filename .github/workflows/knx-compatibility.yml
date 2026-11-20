@@ -44,7 +44,7 @@ jobs:
         env:
           HA_VERSION: ${{ matrix.ha }}
         run: python -m pip install --disable-pip-version-check "homeassistant==$HA_VERSION"
-      - name: Install this release's declared KNX and frontend requirements
+      - name: Install this release's declared KNX, frontend and TP-Link requirements
         run: |
           python - <<'PY'
           import json
@@ -55,7 +55,7 @@ jobs:
           root = pathlib.Path(homeassistant.__file__).parent
           requirements = [
               requirement
-              for domain in ("knx", "frontend", "ssdp", "zeroconf")
+              for domain in ("knx", "frontend", "ssdp", "zeroconf", "tplink")
               for requirement in json.loads(
                   (root / "components" / domain / "manifest.json").read_text()
               ).get("requirements", [])
@@ -77,5 +77,7 @@ jobs:
         run: python tests/power_events_runtime_check.py
       - name: Verify HomeKit accessory listing (zeroconf cache, HomeKit model table, WebSocket)
         run: python tests/homekit_runtime_check.py
+      - name: Verify Tapo IR remotes (WebSocket, private store, python-kasa KLAP protocol)
+        run: python tests/tapo_ir_runtime_check.py
       - name: Validate real schemas, package loading, native IDs, ETS import and writer transaction
         run: python tests/knx_compatibility_runtime_check.py

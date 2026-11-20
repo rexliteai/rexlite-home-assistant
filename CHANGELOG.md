@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.61
+
+- **Tapo H110 紅外線遙控**：新 WebSocket 指令 `rexlite/tapo_ir`（管理員），給 MAX'Is 運營平台「Matter › Tapo H110 › 紅外線」在平台上新增遙控器，不用 Tapo App：
+  - `hubs`（`discover: true` 在區網找 H110）、`link`（Tapo 帳號登入一次）／`unlink`、`remotes`（遙控器與按鍵，不含紅外線波形）。
+  - `learn`／`learn_status`／`learn_stop`：H110 進入接收模式，等原廠遙控器按一下（5–120 秒），學到的訊號以 `captureId` 暫存 10 分鐘。
+  - `save_key`：沒有 `remote` 就建立新遙控器（含第一個按鍵；第一個按鍵沒存成功會刪掉新遙控器），有 `remote` 就新增或重學按鍵；`delete_key`、`rename`、`delete_remote`、`send`（按一下按鍵）、`ac`（Tapo 碼庫冷氣：開關、冷氣／暖氣、16–30°、風速、風向，送完整狀態）。
+  - 每個寫入都向 H110 讀回確認才回報完成；寫入不自動重送（避免按兩次或多建一個遙控器），只有 session 過期（H110 沒執行）會重登一次。H110 換了 IP 會在區網重新找到它。
+- TP-Link 沒有公開這些指令，請求格式參考 [Loadst0ne/tapo-ir-hub](https://github.com/Loadst0ne/tapo-ir-hub)（MIT，已在實機 H110 使用）。連線用 Home Assistant 內建 TP-Link 整合附帶的 python-kasa（KLAP）；REXLiTE AI 不新增套件需求，主機沒有 python-kasa 時回 `supported: false`，其他功能照常載入。
+- 帳號只用來登入：`.storage/rexlite_tapo_ir`（僅擁有者可讀）只存 python-kasa 的帳密雜湊、H110 位址與遮罩過的帳號（例如 `n•••@gmail.com`），不存密碼、不寫進記錄。
+
 ## 0.1.60
 
 - **HomeKit／Matter 掃描附診斷**：`rexlite/homekit/accessories` 多回傳 `diagnostics`，用來查「設備在同一網路、也在配對模式，主機卻看不到」：

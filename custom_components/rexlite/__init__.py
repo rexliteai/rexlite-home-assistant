@@ -53,11 +53,16 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     from .network_traffic_api import async_register_network_traffic
     from .node_red_bridge import register_node_red_bridge
     from .power_events import async_register_power_events
+    from .tapo_ir import register_tapo_ir
     from .thread_border_routers import register_thread_border_routers
 
     register_device_discovery(hass)
     register_thread_border_routers(hass)
     register_homekit_accessories(hass)
+    try:
+        register_tapo_ir(hass)
+    except Exception:  # noqa: BLE001 - IR remotes are optional; the tunnel must load
+        _LOGGER.exception("Could not register the Tapo IR remotes")
     register_node_red_bridge(hass)
     frigate = register_frigate_bridge(hass)
     try:
