@@ -518,7 +518,8 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         device, store = FakeH110(), MemoryStore()
         device.bound = False
         instance = manager(device, store=store, discovered=[raw_discovery()])
-        await instance.handle({"action": "hubs", "discover": True})
+        hubs = await instance.handle({"action": "hubs", "discover": True})
+        self.assertIs(hubs["accountOptional"], True)
         result = await instance.handle({"action": "link", "host": device.host})
         self.assertEqual((result["hub"]["id"], result["hub"]["account"]), (HUB, ""))
         self.assertEqual(len(result["remotes"]), 2)

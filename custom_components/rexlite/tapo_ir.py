@@ -958,6 +958,8 @@ class TapoIrManager:
             ]
         return {
             "supported": True,
+            # 0.1.62+: the platform tries `link` without an account first.
+            "accountOptional": True,
             "hubs": [self._hub_view(record) for record in data["hubs"].values()],
             "found": found,
         }

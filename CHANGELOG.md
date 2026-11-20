@@ -6,6 +6,7 @@
   - 只送一次 handshake1，帳密在主機端比對，H110 不會記成登入失敗。
   - 免帳號連結的 H110 不存帳密雜湊，`account` 為空字串；之後 H110 若綁了帳號，任何操作回 `tapo_ir_account_required`。
   - 只填帳號或只填密碼仍回 `tapo_ir_invalid`。
+  - `hubs` 多回 `accountOptional: true`，平台據此先試免帳號（舊版沒有這個欄位，平台照舊要求帳號）。
 - CI：`tapo_ir_runtime_check.py` 用 python-kasa 真實的 KLAP handshake1 檢查空白、出廠、已綁帳號三種 H110。
 
 ## 0.1.61
