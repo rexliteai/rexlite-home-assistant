@@ -19,9 +19,13 @@ The transport is python-kasa's KLAP protocol, which Home Assistant ships for its
 TP-Link integration. This module adds no requirement: REXLiTE AI, and the tunnel
 it carries, must load even where python-kasa is missing (``supported: false``).
 
-The Tapo account (TP-Link ID) is used once to log in. The hub keeps only
-python-kasa's credentials hash in ``.storage/rexlite_tapo_ir`` (private) and a
-masked account hint for the platform; the password is never stored or logged.
+Linking first tries without an account: python-kasa checks the H110's KLAP
+challenge against blank credentials and TP-Link's setup credentials on this side,
+so an H110 that never joined a Tapo account links with no login (and a bound one
+sees no failed login). Only when that fails is the Tapo account (TP-Link ID) used,
+once. The hub keeps only python-kasa's credentials hash in
+``.storage/rexlite_tapo_ir`` (private) and a masked account hint for the
+platform; the password is never stored or logged.
 """
 
 from __future__ import annotations
@@ -183,6 +187,13 @@ def unreachable() -> TapoIrError:
 
 def auth_failed() -> TapoIrError:
     return TapoIrError("tapo_ir_auth", "Tapo 帳號或密碼不符，請用綁定這台 H110 的帳號")
+
+
+def account_required() -> TapoIrError:
+    """The H110 joined a Tapo account, so linking without one is not enough."""
+    return TapoIrError(
+        "tapo_ir_account_required", "這台 H110 綁定了 Tapo 帳號，請登入一次"
+    )
 
 
 def busy() -> TapoIrError:
@@ -670,8 +681,10 @@ class HubClient:
         )
         if self._credentials is not None:
             config.credentials = self._credentials
-        else:
-            config.credentials_hash = self.record.get("credentials_hash")
+        elif self.record.get("credentials_hash"):
+            config.credentials_hash = self.record["credentials_hash"]
+        # Neither (linked without an account): python-kasa uses blank credentials
+        # and falls back to TP-Link's setup credentials.
         return config
 
     def _ensure(self) -> Any:
@@ -832,7 +845,7 @@ class TapoIrManager:
         data = await self._load()
         record = data["hubs"].get(normalize_mac(hub))
         if record is None:
-            raise TapoIrError("tapo_ir_not_linked", "這台 H110 還沒連結 Tapo 帳號")
+            raise TapoIrError("tapo_ir_not_linked", "這台 H110 還沒連結，請重新連結")
         return record
 
     def _client(self, record: dict[str, Any]) -> HubClient:
@@ -907,6 +920,15 @@ class TapoIrManager:
 
     async def _with_client(self, record: dict[str, Any], job: Any) -> Any:
         """Run one job; if the H110 moved, find it again and retry once."""
+        try:
+            return await self._run_job(record, job)
+        except TapoIrError as err:
+            if err.code == "tapo_ir_auth" and not record.get("credentials_hash"):
+                # Linked without an account, and now the H110 wants one.
+                raise account_required() from err
+            raise
+
+    async def _run_job(self, record: dict[str, Any], job: Any) -> Any:
         client = self._client(record)
         try:
             async with client.lock:
@@ -936,6 +958,8 @@ class TapoIrManager:
             ]
         return {
             "supported": True,
+            # 0.1.62+: the platform tries `link` without an account first.
+            "accountOptional": True,
             "hubs": [self._hub_view(record) for record in data["hubs"].values()],
             "found": found,
         }
@@ -947,9 +971,11 @@ class TapoIrManager:
         password = str(msg.get("password") or "")
         if not host:
             raise invalid("請輸入 H110 的 IP 位址")
-        if not username or len(username) > ACCOUNT_MAX:
+        # No account at all = try blank / TP-Link setup credentials first.
+        with_account = bool(username or password)
+        if with_account and (not username or len(username) > ACCOUNT_MAX):
             raise invalid("請輸入 Tapo 帳號（電子郵件）")
-        if not password or len(password) > ACCOUNT_MAX:
+        if with_account and (not password or len(password) > ACCOUNT_MAX):
             raise invalid("請輸入 Tapo 密碼")
         known = next(
             (item for item in self._found.values() if item["host"] == host), None
@@ -962,11 +988,16 @@ class TapoIrManager:
             else dict(DEFAULT_CONNECTION),
         }
         client = HubClient(kasa, record)
-        client.use_credentials(username, password)
+        if with_account:
+            client.use_credentials(username, password)
         try:
             info = await client.hub("get_device_info")
-            credentials_hash = client.credentials_hash
+            credentials_hash = client.credentials_hash if with_account else ""
             remotes = await client.children()
+        except TapoIrError as err:
+            if err.code == "tapo_ir_auth" and not with_account:
+                raise account_required() from err
+            raise
         finally:
             await client.close()
         mac = normalize_mac(info.get("mac")) or record["mac"]
@@ -974,7 +1005,7 @@ class TapoIrManager:
             info.get("model")
         ):
             raise invalid("這台不是 Tapo H110，請確認 IP 位址")
-        if not mac or not credentials_hash:
+        if not mac or (with_account and not credentials_hash):
             raise failed("H110 沒有完成登入，請再試一次")
         data = await self._load()
         record.update(
@@ -982,8 +1013,9 @@ class TapoIrManager:
                 "mac": mac,
                 "model": hub_model(info.get("model")),
                 "name": decode_text(info.get("nickname")) or "Tapo H110",
+                # Empty hash and account = linked without an account.
                 "credentials_hash": credentials_hash,
-                "account": mask_account(username),
+                "account": mask_account(username) if with_account else "",
                 "linkedAt": _now(),
             }
         )

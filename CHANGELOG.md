@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.62
+
+- **Tapo H110 免帳號連結**：`rexlite/tapo_ir` 的 `link` 可以不帶 `username`／`password`（兩個都空）。python-kasa 會在主機這端比對 H110 的 KLAP 挑戰：沒綁過 Tapo 帳號的 H110（空白帳密或 TP-Link 出廠帳密）直接連上，不用登入；已綁帳號的回 `tapo_ir_account_required`（「這台 H110 綁定了 Tapo 帳號，請登入一次」），平台再請使用者登入。
+  - 只送一次 handshake1，帳密在主機端比對，H110 不會記成登入失敗。
+  - 免帳號連結的 H110 不存帳密雜湊，`account` 為空字串；之後 H110 若綁了帳號，任何操作回 `tapo_ir_account_required`。
+  - 只填帳號或只填密碼仍回 `tapo_ir_invalid`。
+  - `hubs` 多回 `accountOptional: true`，平台據此先試免帳號（舊版沒有這個欄位，平台照舊要求帳號）。
+- CI：`tapo_ir_runtime_check.py` 用 python-kasa 真實的 KLAP handshake1 檢查空白、出廠、已綁帳號三種 H110。
+
 ## 0.1.61
 
 - **Tapo H110 紅外線遙控**：新 WebSocket 指令 `rexlite/tapo_ir`（管理員），給 MAX'Is 運營平台「Matter › Tapo H110 › 紅外線」在平台上新增遙控器，不用 Tapo App：

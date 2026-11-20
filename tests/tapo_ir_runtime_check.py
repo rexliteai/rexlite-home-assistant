@@ -241,6 +241,51 @@ async def check_python_kasa() -> None:
     else:
         raise AssertionError("an unknown method did not fail")
     await client.close()
+    await check_klap_without_account(kasa, record)
+
+
+async def check_klap_without_account(kasa, record) -> None:
+    """python-kasa's real KLAP handshake1 for a link without an account.
+
+    An H110 that never joined a Tapo account (blank or TP-Link's setup
+    credentials) lets it in; one bound to an account does not. Either way the
+    H110 sees a single handshake1: python-kasa compares its challenge here, so
+    trying without an account is no failed login on the device.
+    """
+    from kasa.credentials import DEFAULT_CREDENTIALS, get_default_credentials
+
+    cases = (
+        ("blank", kasa.Credentials(), True),
+        ("setup", get_default_credentials(DEFAULT_CREDENTIALS["TAPO"]), True),
+        ("bound", kasa.Credentials(*unit.ACCOUNT), False),
+    )
+    for name, device_credentials, opens in cases:
+        client = m.HubClient(kasa, {**record, "credentials_hash": ""})
+        transport = client._ensure()._transport
+        assert transport._credentials == kasa.Credentials(), name
+        assert transport.credentials_hash is None, name
+        device_hash = transport.generate_auth_hash(device_credentials)
+        posts: list[str] = []
+
+        async def post(
+            url, *, data=None, posts=posts, answer=device_hash, klap=transport, **_
+        ):
+            posts.append(str(url))
+            remote_seed = bytes(range(16))
+            return 200, remote_seed + klap.handshake1_seed_auth_hash(
+                data, remote_seed, answer
+            )
+
+        transport._http_client.post = post
+        try:
+            _local, _remote, auth_hash = await transport.perform_handshake1()
+        except kasa.AuthenticationError:
+            assert not opens, f"{name}: python-kasa refused an H110 without an account"
+        else:
+            assert opens, f"{name}: python-kasa accepted an H110 bound to an account"
+            assert auth_hash == device_hash, name
+        assert [url.rsplit("/", 1)[-1] for url in posts] == ["handshake1"], posts
+        await client.close()
 
 
 async def main() -> None:

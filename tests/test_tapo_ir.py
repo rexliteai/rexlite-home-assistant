@@ -103,10 +103,15 @@ class FakeH110:
         self.next_id = 1
         self.fail = {}
         self.rename_new_keys = False
+        # False: never joined a Tapo account, so python-kasa's blank/setup
+        # credentials (tried for any login) get in.
+        self.bound = True
 
     def check(self, config):
         if config.host != self.host:
             raise KasaException("no route to host")
+        if not self.bound:
+            return
         if config.credentials is not None:
             if (config.credentials.username, config.credentials.password) != ACCOUNT:
                 raise AuthenticationError("handshake failed", error_code=-1501)
@@ -508,6 +513,56 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (ac["kind"], ac["ac"]["temp"], ac["ac"]["complete"]), ("ac", 26, True)
         )
+
+    async def test_an_unbound_h110_links_without_an_account(self):
+        device, store = FakeH110(), MemoryStore()
+        device.bound = False
+        instance = manager(device, store=store, discovered=[raw_discovery()])
+        hubs = await instance.handle({"action": "hubs", "discover": True})
+        self.assertIs(hubs["accountOptional"], True)
+        result = await instance.handle({"action": "link", "host": device.host})
+        self.assertEqual((result["hub"]["id"], result["hub"]["account"]), (HUB, ""))
+        self.assertEqual(len(result["remotes"]), 2)
+        record = store.data["hubs"][HUB]
+        self.assertEqual((record["credentials_hash"], record["account"]), ("", ""))
+        # After a restart the session again goes without credentials.
+        restarted = manager(device, store=store)
+        listed = await restarted.handle({"action": "remotes", "hub": HUB})
+        self.assertEqual(len(listed["remotes"]), 2)
+        config = restarted._clients[HUB]._protocol.config
+        self.assertEqual((config.credentials, config.credentials_hash), (None, None))
+
+    async def test_a_bound_h110_asks_for_the_account(self):
+        device, store = FakeH110(), MemoryStore()
+        instance = manager(device, store=store)
+        with self.assertRaises(m.TapoIrError) as error:
+            await instance.handle({"action": "link", "host": device.host})
+        self.assertEqual(error.exception.code, "tapo_ir_account_required")
+        self.assertIsNone(store.data)
+        # Half an account is a typo, not a link without one.
+        for fields in ({"username": ACCOUNT[0]}, {"password": ACCOUNT[1]}):
+            with self.assertRaises(m.TapoIrError) as error:
+                await instance.handle({"action": "link", "host": device.host, **fields})
+            self.assertEqual(error.exception.code, "tapo_ir_invalid")
+        result = await instance.handle(
+            {
+                "action": "link",
+                "host": device.host,
+                "username": ACCOUNT[0],
+                "password": ACCOUNT[1],
+            }
+        )
+        self.assertEqual(result["hub"]["account"], "n•••@example.com")
+
+    async def test_a_hub_linked_without_an_account_says_when_it_needs_one(self):
+        device = FakeH110()
+        device.bound = False
+        instance = manager(device)
+        await instance.handle({"action": "link", "host": device.host})
+        device.bound = True  # it joined a Tapo account in the Tapo App
+        with self.assertRaises(m.TapoIrError) as error:
+            await instance.handle({"action": "remotes", "hub": HUB})
+        self.assertEqual(error.exception.code, "tapo_ir_account_required")
 
     async def test_learning_captures_one_button_and_always_stops_receiving(self):
         device = FakeH110()
