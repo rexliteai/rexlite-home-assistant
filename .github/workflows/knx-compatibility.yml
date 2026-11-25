@@ -79,5 +79,7 @@ jobs:
         run: python tests/homekit_runtime_check.py
       - name: Verify Tapo IR remotes (WebSocket, private store, python-kasa KLAP protocol)
         run: python tests/tapo_ir_runtime_check.py
+      - name: Verify Node-RED bridge (job after restart, module install scheduled at start)
+        run: python tests/node_red_runtime_check.py
       - name: Validate real schemas, package loading, native IDs, ETS import and writer transaction
         run: python tests/knx_compatibility_runtime_check.py

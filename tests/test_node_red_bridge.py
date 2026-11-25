@@ -300,21 +300,40 @@ class Mqtt:
 
 
 class NodeRed:
-    def __init__(self, flows, types=None) -> None:
+    def __init__(self, flows, types=None, *, nodejs="v22.12.0") -> None:
         self.flows = flows
         self.rev = "r1"
         self.types = types or {"inject": "node-red", "function": "node-red"}
         self.installed: list[str] = []
+        self.versions: list[str | None] = []
+        # Install attempts that fail before one succeeds (npm or network trouble).
+        self.install_failures = 0
+        # Releases npm refuses here (engine-strict on an older Node.js).
+        self.refused: set[str] = set()
+        self.install_gate: asyncio.Event | None = None
+        self.nodejs = nodejs
         self.conflicts = 0
         self.deployed: list[list[dict]] = []
 
     async def settings(self):
         return {"version": "4.0.9"}
 
+    async def diagnostics(self):
+        return {"nodejs": {"version": self.nodejs}} if self.nodejs else {}
+
     async def node_types(self):
         return dict(self.types)
 
-    async def install_module(self, module):
+    async def install_module(self, module, version=None):
+        self.versions.append(version)
+        if self.install_gate is not None:
+            await self.install_gate.wait()
+        if self.install_failures or version in self.refused:
+            self.install_failures = max(0, self.install_failures - 1)
+            raise client_module.NodeRedError(
+                "node_red_install_failed",
+                f"Node-RED 無法安裝 {module}：Install failed，請確認案場可連網",
+            )
         self.installed.append(module)
         for name in ("modbus-flex-getter", "modbus-flex-write", "modbus-client"):
             self.types[name] = module
@@ -335,7 +354,7 @@ class NodeRed:
         return self.rev
 
 
-def manager(node_red, *, mqtt=None, store=None, info=None):
+def manager(node_red, *, mqtt=None, store=None, info=None, prepare=False):
     bridges = m.NodeRedBridges(
         store=store or Store(),
         session=None,
@@ -343,6 +362,12 @@ def manager(node_red, *, mqtt=None, store=None, info=None):
         create_task=lambda coro, name: asyncio.get_running_loop().create_task(coro),
         integration_version="0.1.22",
     )
+    bridges.install_retry_delay = 0
+    bridges.prepare_retry = 0.01
+    bridges.prepare_calls = []
+    if not prepare:
+        # Status reads start background installs; most tests only record them.
+        bridges.schedule_prepare = lambda delay=0: bridges.prepare_calls.append(delay)
 
     async def locate():
         if node_red is None:
@@ -394,6 +419,8 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         done = await finish(bridges, job)
         self.assertEqual(done["state"], "completed", done)
         self.assertEqual(done["result"]["installed"], ["node-red-contrib-modbus"])
+        # The pinned release for Node.js 22+, not whatever npm calls latest.
+        self.assertEqual(node_red.versions, ["5.62.1"])
         self.assertEqual(done["result"]["health"]["gateway"], True)
         ids = [n["id"] for n in node_red.flows]
         self.assertEqual(ids[0], "user-tab")
@@ -596,6 +623,211 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
             result["devices"][0]["existing"], {"name": "客廳紗簾", "key": "livingroom2"}
         )
         self.assertIsNone(result["devices"][1]["existing"])
+
+    async def test_a_job_is_found_after_ha_restarts(self):
+        # 11/17 on site: a wizard re-checking its job right after a restart got
+        # 「找不到部署作業」 because nothing had loaded the stored jobs yet.
+        failed = {
+            "jobId": OPERATION,
+            "kind": "deploy",
+            "state": "failed",
+            "error": {"code": "node_red_install_failed", "message": "x"},
+        }
+        bridges = manager(NodeRed([]), store=Store({"bridges": {}, "jobs": [failed]}))
+        self.assertEqual((await bridges.find_job(OPERATION))["state"], "failed")
+        running = {**failed, "state": "running", "error": None}
+        bridges = manager(NodeRed([]), store=Store({"bridges": {}, "jobs": [running]}))
+        self.assertEqual((await bridges.find_job(OPERATION))["state"], "interrupted")
+        with self.assertRaises(m.NodeRedError) as caught:
+            await bridges.find_job("9f2a3c8e-5d1b-4a8e-9c3d-2b1a0f9e8d7c")
+        self.assertEqual(caught.exception.code, "node_red_job_not_found")
+
+
+def ready(kind):
+    return {"found": True, "kind": kind, "state": "ready"}
+
+
+class ModuleInstallTests(unittest.IsolatedAsyncioTestCase):
+    def test_release_follows_the_node_version(self):
+        modbus = "node-red-contrib-modbus"
+        self.assertEqual(m.module_versions(modbus, 24), ["5.62.1"])
+        self.assertEqual(m.module_versions(modbus, 22), ["5.62.1"])
+        self.assertEqual(m.module_versions(modbus, 20), ["5.45.2"])
+        self.assertEqual(m.module_versions(modbus, 18), ["5.45.2"])
+        # Unknown (diagnostics turned off): the newest first, then the older one.
+        self.assertEqual(m.module_versions(modbus, None), ["5.62.1", "5.45.2"])
+
+    async def test_install_picks_the_release_for_this_node_js(self):
+        for nodejs, expected in (
+            ("v20.18.1", ["5.45.2"]),
+            ("v24.11.0", ["5.62.1"]),
+        ):
+            node_red = NodeRed([], nodejs=nodejs)
+            bridges = manager(node_red)
+            installed = await bridges.install_modules(node_red, {"modbus-client"})
+            self.assertEqual(installed, ["node-red-contrib-modbus"])
+            self.assertEqual(node_red.versions, expected, nodejs)
+
+    async def test_unknown_node_js_falls_back_to_the_older_release(self):
+        node_red = NodeRed([], nodejs="")
+        node_red.refused = {"5.62.1"}  # npm engine-strict on Node.js 20
+        bridges = manager(node_red)
+        await bridges.install_modules(node_red, {"modbus-flex-getter"})
+        self.assertEqual(node_red.versions, ["5.62.1", "5.45.2"])
+        self.assertEqual(node_red.installed, ["node-red-contrib-modbus"])
+
+    async def test_a_failed_install_is_tried_again_once(self):
+        node_red = NodeRed([])
+        node_red.install_failures = 1
+        bridges = manager(node_red, mqtt=Mqtt({"deployment": OPERATION}))
+        done = await finish(
+            bridges,
+            await bridges.start_deploy(
+                {"operationId": OPERATION, "bridge": ACS, "flow": ac_flow()}
+            ),
+        )
+        self.assertEqual(done["state"], "completed", done)
+        self.assertEqual(node_red.versions, ["5.62.1", "5.62.1"])
+
+        node_red = NodeRed([])
+        node_red.install_failures = 2
+        bridges = manager(node_red, mqtt=Mqtt())
+        done = await finish(
+            bridges,
+            await bridges.start_deploy(
+                {"operationId": OPERATION, "bridge": ACS, "flow": ac_flow()}
+            ),
+        )
+        self.assertEqual(done["state"], "failed")
+        self.assertEqual(done["stage"], "modules")
+        self.assertEqual(done["error"]["code"], "node_red_install_failed")
+        self.assertIn("Install failed", done["error"]["message"])
+        self.assertEqual(node_red.deployed, [])
+
+    async def test_curtain_flows_install_nothing(self):
+        node_red = NodeRed([])
+        bridges = manager(node_red)
+        self.assertEqual(
+            await bridges.install_modules(node_red, {"tcp request", "mqtt in"}), []
+        )
+        self.assertEqual(node_red.versions, [])
+
+    async def test_hub_node_red_gets_the_modules_in_the_background(self):
+        for kind in ("local", "addon"):
+            node_red = NodeRed([])
+            bridges = manager(node_red, info=ready(kind), prepare=True)
+            bridges.schedule_prepare(0)
+            await bridges.prepare_task
+            self.assertEqual(node_red.installed, ["node-red-contrib-modbus"], kind)
+            self.assertEqual(bridges.module_install["state"], "installed")
+            self.assertEqual(bridges.module_install["version"], "5.62.1")
+            status = await bridges.status()
+            self.assertEqual(
+                status["nodeRed"]["modules"], {"node-red-contrib-modbus": True}
+            )
+            self.assertEqual(status["nodeRed"]["moduleInstall"]["state"], "installed")
+
+    async def test_background_install_leaves_other_node_reds_alone(self):
+        # A Node-RED reached by URL gets modules only when a flow needs them.
+        node_red = NodeRed([])
+        bridges = manager(node_red, info=ready("url"), prepare=True)
+        bridges.schedule_prepare(0)
+        await bridges.prepare_task
+        self.assertEqual(node_red.versions, [])
+        # Already installed: nothing to do, nothing reported.
+        node_red = NodeRed(
+            [], types={name: "node-red-contrib-modbus" for name in m.MODULES}
+        )
+        bridges = manager(node_red, info=ready("local"), prepare=True)
+        bridges.schedule_prepare(0)
+        await bridges.prepare_task
+        self.assertEqual(node_red.versions, [])
+        self.assertIsNone(bridges.module_install)
+        # No Node-RED at all.
+        bridges = manager(None, prepare=True)
+        bridges.schedule_prepare(0)
+        await bridges.prepare_task
+
+    async def test_an_offline_site_is_tried_again_later(self):
+        node_red = NodeRed([])
+        node_red.install_failures = 2  # both tries of the first round
+        bridges = manager(node_red, info=ready("local"), prepare=True)
+        with self.assertLogs(m._LOGGER.name, "WARNING"):
+            bridges.schedule_prepare(0)
+            for _ in range(200):
+                state = (bridges.module_install or {}).get("state")
+                if state == "failed":
+                    break
+                await asyncio.sleep(0.005)
+        self.assertEqual(bridges.module_install["state"], "failed")
+        self.assertIn("請確認案場可連網", bridges.module_install["message"])
+        await bridges.prepare_task
+        self.assertEqual(node_red.installed, ["node-red-contrib-modbus"])
+        self.assertEqual(bridges.module_install["state"], "installed")
+
+    async def test_status_tries_again_now_instead_of_waiting(self):
+        node_red = NodeRed([])
+        node_red.install_failures = 2
+        bridges = manager(node_red, mqtt=Mqtt(), info=ready("local"), prepare=True)
+        bridges.prepare_retry = 3600  # the next background try is far away
+        with self.assertLogs(m._LOGGER.name, "WARNING"):
+            bridges.schedule_prepare(0)
+            for _ in range(200):
+                if (bridges.module_install or {}).get("state") == "failed":
+                    break
+                await asyncio.sleep(0.005)
+        waiting = bridges.prepare_task
+        self.assertFalse(waiting.done())
+        await bridges.status()  # within 10 minutes: keeps waiting
+        self.assertIs(bridges.prepare_task, waiting)
+        bridges._prepared_at -= m.PREPARE_COOLDOWN_S
+        await bridges.status()  # the site is back online and a wizard opened
+        self.assertIsNot(bridges.prepare_task, waiting)
+        await bridges.prepare_task
+        self.assertTrue(waiting.cancelled())
+        self.assertEqual(node_red.installed, ["node-red-contrib-modbus"])
+
+    async def test_status_starts_one_install_per_cooldown(self):
+        node_red = NodeRed([])
+        node_red.install_gate = asyncio.Event()
+        bridges = manager(node_red, mqtt=Mqtt(), info=ready("local"), prepare=True)
+        status = await bridges.status()
+        self.assertEqual(
+            status["nodeRed"]["modules"], {"node-red-contrib-modbus": False}
+        )
+        task = bridges.prepare_task
+        self.assertIsNotNone(task)
+        await asyncio.sleep(0.01)
+        status = await bridges.status()
+        self.assertIs(bridges.prepare_task, task)
+        self.assertEqual(status["nodeRed"]["moduleInstall"]["state"], "installing")
+        node_red.install_gate.set()
+        await task
+        await bridges.status()
+        self.assertIs(bridges.prepare_task, task)
+        self.assertEqual(node_red.versions, ["5.62.1"])
+        # A URL Node-RED is not touched by status reads.
+        url = manager(NodeRed([]), mqtt=Mqtt(), info=ready("url"))
+        await url.status()
+        self.assertEqual(url.prepare_calls, [])
+
+    async def test_deploy_waits_for_the_background_install(self):
+        node_red = NodeRed([])
+        node_red.install_gate = asyncio.Event()
+        bridges = manager(node_red, mqtt=Mqtt({"deployment": OPERATION}), prepare=True)
+        bridges.schedule_prepare(0)
+        await asyncio.sleep(0.01)
+        job = await bridges.start_deploy(
+            {"operationId": OPERATION, "bridge": ACS, "flow": ac_flow()}
+        )
+        await asyncio.sleep(0.01)
+        self.assertEqual(bridges.job(job["jobId"])["stage"], "modules")
+        node_red.install_gate.set()
+        done = await finish(bridges, job)
+        self.assertEqual(done["state"], "completed", done)
+        # Installed once, by the background task; the deploy found it ready.
+        self.assertEqual(node_red.installed, ["node-red-contrib-modbus"])
+        self.assertEqual(done["result"]["installed"], [])
 
 
 if __name__ == "__main__":
