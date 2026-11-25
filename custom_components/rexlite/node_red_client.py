@@ -222,18 +222,30 @@ class NodeRedClient:
                 types[str(node_type)] = str(node_set.get("module", ""))
         return types
 
-    async def install_module(self, module: str) -> None:
+    async def diagnostics(self) -> dict:
+        """Node-RED's diagnostics report (Node.js version); {} if turned off."""
+
+        status, payload = await self.request("GET", "/diagnostics")
+        return payload if status == 200 and isinstance(payload, dict) else {}
+
+    async def install_module(self, module: str, version: str | None = None) -> None:
+        body = {"module": module, **({"version": version} if version else {})}
         status, payload = await self.request(
-            "POST", "/nodes", json_body={"module": module}, seconds=600
+            "POST", "/nodes", json_body=body, seconds=300
         )
-        if status != 200:
-            detail = payload.get("message") if isinstance(payload, dict) else ""
-            raise NodeRedError(
-                "node_red_install_failed",
-                f"Node-RED 無法安裝 {module}"
-                f"{f'：{detail}' if detail else ''}，請確認案場可連網",
-                status=status,
-            )
+        if status == 200:
+            return
+        details = payload if isinstance(payload, dict) else {}
+        # Installed meanwhile (palette manager, a parallel request): nothing to do.
+        if details.get("code") == "module_already_loaded":
+            return
+        detail = details.get("message") or ""
+        raise NodeRedError(
+            "node_red_install_failed",
+            f"Node-RED 無法安裝 {module}"
+            f"{f'：{detail}' if detail else ''}，請確認案場可連網",
+            status=status,
+        )
 
 
 async def connect_url(

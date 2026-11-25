@@ -207,6 +207,36 @@ class AdminApiTests(unittest.IsolatedAsyncioTestCase):
             await client.install_module("node-red-contrib-modbus")
         self.assertIn("npm failed", caught.exception.message)
 
+    async def test_pinned_install_and_already_installed_module(self):
+        session, client = self.client(
+            {("POST", f"{BASE}/nodes"): (200, {"name": "node-red-contrib-modbus"})}
+        )
+        await client.install_module("node-red-contrib-modbus", "5.62.1")
+        self.assertEqual(
+            session.calls[-1][2]["json"],
+            {"module": "node-red-contrib-modbus", "version": "5.62.1"},
+        )
+        # Installed meanwhile from the palette manager: not an error.
+        _session, client = self.client(
+            {
+                ("POST", f"{BASE}/nodes"): (
+                    400,
+                    {
+                        "code": "module_already_loaded",
+                        "message": "Module already loaded",
+                    },
+                )
+            }
+        )
+        await client.install_module("node-red-contrib-modbus", "5.62.1")
+
+    async def test_diagnostics_reports_node_js_or_nothing(self):
+        report = {"report": "diagnostics", "nodejs": {"version": "v22.12.0"}}
+        _session, client = self.client({("GET", f"{BASE}/diagnostics"): (200, report)})
+        self.assertEqual(await client.diagnostics(), report)
+        _session, client = self.client({("GET", f"{BASE}/diagnostics"): (404, "")})
+        self.assertEqual(await client.diagnostics(), {})
+
 
 class SupervisorTests(unittest.IsolatedAsyncioTestCase):
     async def test_ingress_endpoint_uses_a_supervisor_session(self):

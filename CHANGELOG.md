@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.63
+
+- **Node-RED 的 Modbus 節點自動備妥**：日立冷氣（RS-485）流程需要的 `node-red-contrib-modbus`，案場不用再到 Node-RED「管理節點」手動安裝：
+  - HA 啟動約 1 分鐘後，檢查主機自己的 Node-RED（add-on 或 IPC 安裝器的本機容器）；缺少就在背景經 Admin API 安裝，Node-RED 不用重啟。失敗（例如暫時不能連網）每 30 分鐘再試，最多 6 次。
+  - 平台開啟「加入冷氣／窗簾／電子鎖」精靈讀取 `rexlite/nodered/status` 時，若仍缺少也立即在背景安裝（10 分鐘內最多一次）；`nodeRed.moduleInstall` 回報 `installing`／`installed`／`failed` 與訊息。
+  - 部署照舊會再檢查；背景安裝進行中時部署等它完成，不重複安裝。
+  - 安裝固定版本：Node.js 22 以上（Node-RED 5）用 5.62.1，Node.js 18／20 用 5.45.2（依 Node-RED `/diagnostics` 的 Node.js 版本；讀不到時先試 5.62.1 再試 5.45.2）。只有一個版本可試時失敗會再試一次；錯誤訊息帶 Node-RED 的原因。Node-RED 回 `module_already_loaded`（「管理節點」剛裝好）視為成功。
+  - 以網址指定的 Node-RED 不預先安裝，只在部署需要時安裝。
+- 修正：HA 重新啟動後，平台查部署進度（`rexlite/nodered/job`）會回「找不到部署作業」，精靈無法接續；現在先讀取保存的作業紀錄，回報 `failed`／`interrupted` 等實際結果。
+- 已在 Node-RED 5.0.4 實測：背景安裝 5.62.1（14 個節點）後部署平台產生的日立冷氣流程，以及未預裝時由部署自動安裝。
+
 ## 0.1.62
 
 - **Tapo H110 免帳號連結**：`rexlite/tapo_ir` 的 `link` 可以不帶 `username`／`password`（兩個都空）。python-kasa 會在主機這端比對 H110 的 KLAP 挑戰：沒綁過 Tapo 帳號的 H110（空白帳密或 TP-Link 出廠帳密）直接連上，不用登入；已綁帳號的回 `tapo_ir_account_required`（「這台 H110 綁定了 Tapo 帳號，請登入一次」），平台再請使用者登入。

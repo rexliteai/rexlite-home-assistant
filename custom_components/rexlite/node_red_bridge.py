@@ -5,6 +5,10 @@ gateway). This module only accepts that narrow shape, merges it into the
 existing flows without touching anything else, installs missing palette
 modules, and confirms the running flow through an MQTT heartbeat. Gateway
 discovery talks to the RS-485 gateways directly from the HA host.
+
+The palette modules the flows need are installed ahead of time as well: once
+HA has started, and whenever the platform reads the status while one is
+missing, so a site never installs them by hand.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import contextlib
 import copy
 import ipaddress
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -76,6 +81,20 @@ MODULES = {
     "modbus-flex-write": "node-red-contrib-modbus",
     "modbus-client": "node-red-contrib-modbus",
 }
+# Pinned releases, newest first, with the oldest Node.js major each supports:
+# 5.62.1 runs the Hitachi flow on Node-RED 5 (Node.js 22+); 5.45.2 is the last
+# release for Node.js 18/20 (older Node-RED images and add-ons).
+MODULE_RELEASES = {
+    "node-red-contrib-modbus": (("5.62.1", 22), ("5.45.2", 18)),
+}
+# The hub's own Node-RED (add-on, local container) gets the modules before
+# anyone deploys; a Node-RED reached by URL only when a flow needs them.
+PREPARE_KINDS = ("addon", "local")
+PREPARE_DELAY_S = 60.0  # after HA started: the Node-RED container comes up too
+PREPARE_RETRY_S = 1800.0  # an offline site is tried again every 30 minutes
+PREPARE_ATTEMPTS = 6
+PREPARE_COOLDOWN_S = 600.0  # a status read starts at most one try per 10 minutes
+_LOGGER = logging.getLogger(__name__)
 _HEX16 = re.compile(r"^[0-9a-f]{16}$")
 _UUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -106,6 +125,29 @@ def _now() -> str:
 
 def _fail(message: str, code: str = "node_red_invalid_flow") -> NodeRedError:
     return NodeRedError(code, message)
+
+
+def module_versions(module: str, node_major: int | None) -> list[str]:
+    """Releases to try for this Node.js; every release when it is unknown."""
+
+    releases = MODULE_RELEASES.get(module, ())
+    if node_major is None:
+        return [version for version, _minimum in releases]
+    for version, minimum in releases:
+        if node_major >= minimum:
+            return [version]
+    return [releases[-1][0]] if releases else []
+
+
+async def _node_major(client: NodeRedClient) -> int | None:
+    with contextlib.suppress(NodeRedError):
+        report = await client.diagnostics()
+        nodejs = report.get("nodejs") if isinstance(report, dict) else None
+        version = nodejs.get("version", "") if isinstance(nodejs, dict) else ""
+        match = re.match(r"v?(\d+)\.", str(version))
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def validate_bridge(bridge: Any) -> dict:
@@ -322,6 +364,15 @@ class NodeRedBridges:
         # Heartbeats repeat every 10 s; allow the first gateway poll to land.
         self.verify_timeout = 35.0
         self._loaded = False
+        # One palette install at a time: the background one and a deploy's.
+        self._modules_lock = asyncio.Lock()
+        self.install_retry_delay = 5.0
+        self.prepare_retry = PREPARE_RETRY_S
+        self.prepare_task: asyncio.Task | None = None
+        self._prepared_at: float | None = None
+        self._preparing = False
+        # Last background install, shown in status: installing/installed/failed.
+        self.module_install: dict | None = None
 
     async def load(self) -> None:
         if self._loaded:
@@ -532,7 +583,13 @@ class NodeRedBridges:
                 info["version"] = str(settings.get("version", ""))
             with contextlib.suppress(NodeRedError):
                 types = await client.node_types()
-                modules["node-red-contrib-modbus"] = "modbus-flex-getter" in types
+                modules = {
+                    module: all(t in types for t, m in MODULES.items() if m == module)
+                    for module in sorted(set(MODULES.values()))
+                }
+            # Opening a wizard starts the install, so it is done by the deploy.
+            if not all(modules.values()) and info.get("kind") in PREPARE_KINDS:
+                self.prepare_soon()
         config = self._mqtt_config()
         heartbeats = await self._heartbeats()
         now_ms = int(time.time() * 1000)
@@ -552,7 +609,13 @@ class NodeRedBridges:
             "integrationVersion": self.integration_version,
             # Lets the platform tell which device wizards this version can deploy.
             "templates": list(TEMPLATES),
-            "nodeRed": {**info, "modules": modules},
+            "nodeRed": {
+                **info,
+                "modules": modules,
+                "moduleInstall": dict(self.module_install)
+                if self.module_install
+                else None,
+            },
             "mqtt": {
                 "configured": bool(config and config.get("host")),
                 "host": config.get("host") if config else None,
@@ -684,6 +747,134 @@ class NodeRedBridges:
             )
         return _public_job(job)
 
+    async def find_job(self, job_id: str) -> dict:
+        # After an HA restart the first call may be a wizard re-checking its job.
+        await self.load()
+        return self.job(job_id)
+
+    # Palette modules -----------------------------------------------------
+
+    async def install_modules(
+        self,
+        client: NodeRedClient,
+        node_types: set[str] | list[str],
+        installing: Callable[[str, str], None] | None = None,
+    ) -> list[str]:
+        """Install the pinned modules these node types need; return the new ones."""
+
+        needed = {t for t in node_types if t in MODULES}
+        async with self._modules_lock:
+            types = await client.node_types()
+            missing = sorted({MODULES[t] for t in needed if t not in types})
+            if not missing:
+                return []
+            node_major = await _node_major(client)
+            for module in missing:
+                versions = module_versions(module, node_major)
+                # A single candidate gets a second try (npm or a mirror hiccup).
+                attempts = versions if len(versions) > 1 else versions * 2
+                for index, version in enumerate(attempts):
+                    if index:
+                        await asyncio.sleep(self.install_retry_delay)
+                    if installing is not None:
+                        installing(module, version)
+                    try:
+                        await client.install_module(module, version)
+                        break
+                    except NodeRedError:
+                        if index == len(attempts) - 1:
+                            raise
+            types = await client.node_types()
+            if any(t not in types for t in needed):
+                raise NodeRedError(
+                    "node_red_install_failed", "Node-RED 節點安裝後仍無法使用"
+                )
+            return missing
+
+    def prepare_soon(self) -> None:
+        """Start a background install now unless one ran in the last 10 minutes."""
+
+        if (
+            self._prepared_at is not None
+            and time.monotonic() - self._prepared_at < PREPARE_COOLDOWN_S
+        ):
+            return
+        task = self.prepare_task
+        if task is not None and not task.done():
+            if self._preparing:
+                return
+            # Waiting for its next try (the site was offline): try now instead.
+            task.cancel()
+            self.prepare_task = None
+        self.schedule_prepare(0)
+
+    def schedule_prepare(self, delay: float = PREPARE_DELAY_S) -> None:
+        """Install the bridge modules into the hub's Node-RED in the background."""
+
+        if self.prepare_task is not None and not self.prepare_task.done():
+            return
+        self._prepared_at = time.monotonic()
+        self.prepare_task = self.create_task(
+            self._prepare(delay), "REXLiTE Node-RED modules"
+        )
+
+    async def _prepare(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        for attempt in range(PREPARE_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(self.prepare_retry)
+            self._prepared_at = time.monotonic()
+            self._preparing = True
+            try:
+                if await self._prepare_once():
+                    return
+            except Exception:  # noqa: BLE001 - a background helper must not crash
+                _LOGGER.exception("Could not prepare the Node-RED modules")
+                return
+            finally:
+                self._preparing = False
+
+    async def _prepare_once(self) -> bool:
+        """True when nothing is left to do here, False to try again later."""
+
+        await self.load()
+        client, info = await self._locate()
+        # No Node-RED, a stopped add-on or a Node-RED reached by URL: the
+        # deploy installs the modules (or reports the problem) when needed.
+        if client is None or info.get("kind") not in PREPARE_KINDS:
+            return True
+
+        def installing(module: str, version: str) -> None:
+            self.module_install = {
+                "state": "installing",
+                "module": module,
+                "version": version,
+                "message": "",
+                "at": _now(),
+            }
+
+        try:
+            installed = await self.install_modules(client, set(MODULES), installing)
+        except NodeRedError as err:
+            failed = self.module_install or {}
+            self.module_install = {
+                "state": "failed",
+                "module": failed.get("module"),
+                "version": failed.get("version"),
+                "message": err.message,
+                "at": _now(),
+            }
+            _LOGGER.warning("Node-RED palette module install failed: %s", err.message)
+            return False
+        if installed:
+            self.module_install = {
+                **(self.module_install or {}),
+                "state": "installed",
+                "at": _now(),
+            }
+            _LOGGER.info("Installed %s into Node-RED", ", ".join(installed))
+        return True
+
     async def start_deploy(self, msg: dict) -> dict:
         await self.load()
         bridge = validate_bridge(msg.get("bridge"))
@@ -758,19 +949,11 @@ class NodeRedBridges:
         started_ms = int(time.time() * 1000)
         client, info = await self._ready_client()
         job["stage"] = "modules"
-        types = await client.node_types()
-        missing = sorted(
-            {MODULES[t] for t in shape["types"] if t in MODULES and t not in types}
-        )
-        for module in missing:
+
+        def installing(module: str, _version: str) -> None:
             job["message"] = f"正在安裝 {module}"
-            await client.install_module(module)
-        if missing:
-            types = await client.node_types()
-            if any(t in MODULES and t not in types for t in shape["types"]):
-                raise NodeRedError(
-                    "node_red_install_failed", "Node-RED 節點安裝後仍無法使用"
-                )
+
+        missing = await self.install_modules(client, shape["types"], installing)
         job.update(stage="deploy", message="")
         settings = await self._broker_settings(broker, info)
         incoming = apply_broker(flow, settings)
@@ -956,6 +1139,7 @@ def register_node_red_bridge(hass: Any) -> NodeRedBridges:
     import voluptuous as vol
     from homeassistant.components import websocket_api
     from homeassistant.helpers.aiohttp_client import async_get_clientsession
+    from homeassistant.helpers.start import async_at_started
     from homeassistant.helpers.storage import Store
 
     from .const import INTEGRATION_VERSION
@@ -975,6 +1159,12 @@ def register_node_red_bridge(hass: Any) -> NodeRedBridges:
         supervisor=supervisor,
         integration_version=INTEGRATION_VERSION,
     )
+
+    async def prepare_modules(_hass: Any) -> None:
+        # The hub's Node-RED gets the bridge modules before any site setup.
+        bridges.schedule_prepare()
+
+    async_at_started(hass, prepare_modules)
 
     def handler(name: str, schema: dict, run: Callable):
         @websocket_api.websocket_command(
@@ -1049,7 +1239,7 @@ def register_node_red_bridge(hass: Any) -> NodeRedBridges:
         handler(
             "job",
             {vol.Required("jobId"): operation},
-            lambda msg: _async_value(bridges.job(msg["jobId"])),
+            lambda msg: bridges.find_job(msg["jobId"]),
         ),
         handler(
             "remove",
@@ -1063,7 +1253,3 @@ def register_node_red_bridge(hass: Any) -> NodeRedBridges:
     for command in commands:
         websocket_api.async_register_command(hass, command)
     return bridges
-
-
-async def _async_value(value: Any) -> Any:
-    return value

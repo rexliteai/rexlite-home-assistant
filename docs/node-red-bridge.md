@@ -16,7 +16,7 @@
 
 | type | 參數 | 回傳 |
 | --- | --- | --- |
-| `rexlite/nodered/status` | – | `api`、`templates`（此版本可部署的範本）、`nodeRed`（state: ready / stopped / auth_required / auth_failed / unreachable / not_installed / not_found）、`mqtt`（含 `suggestedBroker`）、`endpoint`、`bridges`（含心跳 `health`）、`job` |
+| `rexlite/nodered/status` | – | `api`、`templates`（此版本可部署的範本）、`nodeRed`（state: ready / stopped / auth_required / auth_failed / unreachable / not_installed / not_found；`modules`；`moduleInstall` 背景安裝 installing / installed / failed）、`mqtt`（含 `suggestedBroker`）、`endpoint`、`bridges`（含心跳 `health`）、`job` |
 | `rexlite/nodered/configure` | `mode` auto/url、`url`、`username`、`password`、`verifySsl` | 同 status；密碼留空且帳號未變時沿用 |
 | `rexlite/nodered/start_addon` | – | 同 status |
 | `rexlite/nodered/scan` | `template`、`host`、`port`、`maxUnit`（冷氣 1–32，預設 16） | `devices`（窗簾：address、label、position；冷氣：address、state；電子鎖：address `1`、lock `{lock, door}`）、`existing`（已部署的名稱與房間）、`durationMs` |
@@ -34,7 +34,8 @@
 - `bridge`：`template`（`hitachi_ac_modbus` / `somfy_curtain_rs485` / `yale_lock_ya071`）、`gatewayHost`（RFC1918 IPv4）、`gatewayPort`、`devices`（1–32 台；`name`、`key` 小寫房間代號、`address` 站號 1–247、6 碼馬達 ID，或電子鎖固定 `1` 且每個閘道埠只能一把）。
 - `flow` 只能有一個 `tab`（16 碼 hex、標籤以 `RexLite` 開頭），節點類型限 inject、function、delay、tcp request、mqtt in/out、debug、catch、comment、modbus-flex-getter/write；設定節點限 `rexlite_mqtt_broker` 與 16 碼 hex 的 modbus-client。閘道 IP／Port 必須與 `bridge` 相同；MQTT Topic 限 `ac/`、`curtain/`、`lock/`、`rexlite/nodered/`；不可帶 `credentials`。
 - 合併：移除同一分頁、其節點、本次與前次的閘道設定節點後加入新流程，其餘流程原樣保留；以 v2 `rev` 部署（`Node-RED-Deployment-Type: flows`），衝突重試一次。
-- 需要 modbus 節點時自動安裝 `node-red-contrib-modbus`（案場需可連網）。
+- `node-red-contrib-modbus`（冷氣流程用）不需手動安裝：HA 啟動約 1 分鐘後、以及 `status` 發現缺少時（10 分鐘內最多一次），在主機自己的 Node-RED（add-on、本機容器）背景安裝；失敗每 30 分鐘再試，最多 6 次。部署時仍會檢查並補裝（以網址指定的 Node-RED 只在此時安裝）。案場需可連網。
+- 安裝固定版本：Node.js 22 以上 5.62.1，Node.js 18／20 5.45.2（讀 Node-RED `/diagnostics`；讀不到時依序試兩個版本）；只有一個版本可試時失敗再試一次。
 - `broker`：`mode` auto（依 HA MQTT 設定；add-on 使用 host network 而 HA 指向 `core-mosquitto` 等主機名稱時，改用 Broker add-on 對外埠 `127.0.0.1:<port>`；本機 Node-RED（IPC 安裝器的 Docker 容器）而 HA 指向 `localhost`／loopback 時，改用 Docker 主機閘道 `172.17.0.1:<port>`）或 custom（`host`、`port`）；`useHaCredentials` 預設使用 HA 的 MQTT 帳密，於主機端寫入 Node-RED 憑證，不經雲端。
 
 ## 心跳
