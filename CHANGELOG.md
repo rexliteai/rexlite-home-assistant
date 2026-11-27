@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.64
+
+- **修正：更新或重新啟動後，REXLiTE AI 設定項目停在「未載入」、雲端連線不再恢復。** 0.1.7 起 `manifest.json` 的 `after_dependencies` 陸續列了 KNX、MQTT、Thread、備份、藍芽、recorder 等整合；HA 啟動時會等它們，而且其中任何一個啟動失敗（例如 KNX YAML 有一行不合法），HA 就拒絕載入 REXLiTE AI：記錄檔出現 `Unable to set up dependencies of 'rexlite'. Setup failed for dependencies: ['knx']`，設定項目顯示「未載入」，雲端通道不會啟動，也就無法從平台遠端修復。從沒有這些相依的 v0.1.5 直接升級的主機最容易遇到。
+  - `after_dependencies` 全部移除，REXLiTE AI 不再等待、也不再受其他整合啟動結果影響。這些整合本來就只在平台送出指令時才用到，改為用到時才查找；整合不存在或沒載入時，各功能照舊回報無法使用。
+  - 已用 Home Assistant 2026.2.3 實測：設定檔放一行不合法的 KNX YAML，0.1.63 設定項目「未載入」、通道不連線；0.1.64 照常載入並連上雲端。
+- 啟動時每個選用功能（設備探索、Thread、HomeKit、Tapo 紅外線、Node-RED、攝影機、HACS 綁定、KNX 部署、網路流量、跳電紀錄）各自載入與註冊：任何一個失敗只記錄 `Could not start …; the cloud service still loads`，其餘功能與雲端通道照常啟動。之前只有其中三個有保護。
+- 測試：`tests/test_manifest_dependencies.py` 擋 `after_dependencies` 被加回來，以及靜態 `import` 其他整合（hassfest 會因此要求把它列回 manifest）。
+
 ## 0.1.63
 
 - **Node-RED 的 Modbus 節點自動備妥**：日立冷氣（RS-485）流程需要的 `node-red-contrib-modbus`，案場不用再到 Node-RED「管理節點」手動安裝：

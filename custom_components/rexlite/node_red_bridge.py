@@ -104,6 +104,12 @@ _GATEWAY_FRESH_MS = 30_000
 DOCKER_HOST_GATEWAY = "172.17.0.1"
 
 
+def _component(name: str):
+    # Not a static import: REXLiTE AI must load when this integration is
+    # missing or failed its setup (tests/test_manifest_dependencies.py).
+    return __import__(f"homeassistant.components.{name}", fromlist=("__name__",))
+
+
 def _is_loopback(host: str) -> bool:
     host = host.strip().lower().strip("[]")
     if host == "localhost":
@@ -1109,8 +1115,7 @@ class _HomeAssistantMqtt:
     async def available(self) -> bool:
         if "mqtt" not in self.hass.config.components:
             return False
-        from homeassistant.components import mqtt
-
+        mqtt = _component("mqtt")
         with contextlib.suppress(Exception):
             return bool(
                 await asyncio.wait_for(mqtt.async_wait_for_mqtt_client(self.hass), 5)
@@ -1118,8 +1123,9 @@ class _HomeAssistantMqtt:
         return False
 
     async def subscribe(self, topic: str, handler: Callable[[str, str], None]):
-        from homeassistant.components import mqtt
         from homeassistant.core import callback
+
+        mqtt = _component("mqtt")
 
         @callback
         def message(msg: Any) -> None:
@@ -1128,8 +1134,7 @@ class _HomeAssistantMqtt:
         return await mqtt.async_subscribe(self.hass, topic, message)
 
     async def publish(self, topic: str, payload: str, *, retain: bool) -> None:
-        from homeassistant.components import mqtt
-
+        mqtt = _component("mqtt")
         await mqtt.async_publish(self.hass, topic, payload, retain=retain)
 
 

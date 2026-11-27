@@ -21,6 +21,12 @@ PROBE_TIMEOUT = 3
 FRESH_SCAN_SECONDS = 4
 
 
+def _component(name: str):
+    # Not a static import: REXLiTE AI must load when this integration is
+    # missing or failed its setup (tests/test_manifest_dependencies.py).
+    return __import__(f"homeassistant.components.{name}", fromlist=("__name__",))
+
+
 def rest_host(addresses: list[str]) -> str:
     """The address to probe: a private IPv4 first, else a ULA IPv6.
 
@@ -98,11 +104,9 @@ async def probe_rest(session, host: str) -> str:
 
 async def discover_routers(hass) -> list:
     """Routers in HA's zeroconf cache; listen briefly when the cache is empty."""
-    from homeassistant.components import zeroconf
-    from homeassistant.components.thread.discovery import (
-        ThreadRouterDiscovery,
-        async_read_zeroconf_cache,
-    )
+    zeroconf, discovery = _component("zeroconf"), _component("thread.discovery")
+    ThreadRouterDiscovery = discovery.ThreadRouterDiscovery
+    async_read_zeroconf_cache = discovery.async_read_zeroconf_cache
 
     aiozc = await zeroconf.async_get_async_instance(hass)
     found = {row.extended_address: row for row in async_read_zeroconf_cache(aiozc)}

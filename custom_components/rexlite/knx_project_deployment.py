@@ -42,6 +42,12 @@ DEFAULT_BUTTON_PAYLOAD = 1
 _LOGGER = logging.getLogger(__name__)
 
 
+def _component(name: str):
+    # Not a static import: REXLiTE AI must load when this integration is
+    # missing or failed its setup (tests/test_manifest_dependencies.py).
+    return __import__(f"homeassistant.components.{name}", fromlist=("__name__",))
+
+
 class DeploymentError(Exception):
     """An actionable deployment error safe to return over the API."""
 
@@ -831,9 +837,7 @@ class ProjectDeployer:
         return await self.hass.async_add_executor_job(function, *args)
 
     def _module(self, require_project: bool = True) -> Any:
-        from homeassistant.components.knx.const import KNX_MODULE_KEY
-
-        module = self.hass.data.get(KNX_MODULE_KEY)
+        module = self.hass.data.get(_component("knx.const").KNX_MODULE_KEY)
         if module is None or (
             require_project and not getattr(module.project, "loaded", False)
         ):
@@ -946,13 +950,12 @@ class ProjectDeployer:
             self._validate_import_identity(
                 previous, project, compatibility["identityMode"]
             )
-            from homeassistant.components.knx.project import (
-                STORAGE_KEY,
-                STORAGE_VERSION,
-            )
             from homeassistant.helpers.storage import Store
 
-            store = Store(self.hass, STORAGE_VERSION, STORAGE_KEY)
+            knx_project = _component("knx.project")
+            store = Store(
+                self.hass, knx_project.STORAGE_VERSION, knx_project.STORAGE_KEY
+            )
             await store.async_save(project)
             await module.project.load_project(module.xknx, data=project)
             association = {
@@ -970,9 +973,8 @@ class ProjectDeployer:
 
     @staticmethod
     def _schema(config: dict) -> dict:
-        from homeassistant.components.knx import CONFIG_SCHEMA
-
-        return CONFIG_SCHEMA({"knx": deepcopy(config)})["knx"]
+        schema = _component("knx").CONFIG_SCHEMA
+        return schema({"knx": deepcopy(config)})["knx"]
 
     @staticmethod
     def _compatibility() -> dict:

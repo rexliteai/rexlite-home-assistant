@@ -211,6 +211,19 @@ class SetupTests(unittest.IsolatedAsyncioTestCase):
         entry.state_listeners[0]()
         self.assertEqual(heard, ["agents changed"])
 
+    async def test_a_failing_feature_never_stops_the_integration_loading(self) -> None:
+        # A module that cannot be imported stands for any feature that breaks.
+        broken = {f"{PACKAGE_NAME}.tapo_ir": None}
+        with (
+            patch.dict(sys.modules, broken),
+            self.assertLogs(integration._LOGGER, level="ERROR") as logs,
+        ):
+            self.assertTrue(await integration.async_setup(_Hass(), {}))
+
+        self.assertTrue(
+            any("the Tapo IR remotes" in line for line in logs.output), logs.output
+        )
+
     async def test_rejected_credential_triggers_home_assistant_reauth(self) -> None:
         async def reject(*args: Any, **kwargs: Any) -> None:
             raise integration.InvalidAuthError

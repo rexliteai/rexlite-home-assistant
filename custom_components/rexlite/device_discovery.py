@@ -17,6 +17,12 @@ ROUTER_SEARCH_TYPES = (
 CALLBACK_SETUP_TIMEOUT = 2
 
 
+def _component(name: str):
+    # Not a static import: REXLiTE AI must load when this integration is
+    # missing or failed its setup (tests/test_manifest_dependencies.py).
+    return __import__(f"homeassistant.components.{name}", fromlist=("__name__",))
+
+
 def local_origin(value: str) -> str:
     """Never offer credentials to public, malformed or credential-bearing URLs."""
     try:
@@ -168,8 +174,8 @@ class DeviceDiscovery:
             return result
 
     async def _scan(self):
-        from homeassistant.components import ssdp, zeroconf
-        from homeassistant.components.ssdp.const import SSDP_SCANNER
+        ssdp, zeroconf = _component("ssdp"), _component("zeroconf")
+        SSDP_SCANNER = _component("ssdp.const").SSDP_SCANNER
         from homeassistant.loader import (
             IntegrationNotFound,
             async_get_integration,

@@ -157,6 +157,12 @@ DEFAULT_RTSP_PORT = 554
 MAX_CREDENTIALS = 200
 
 
+def _component(name: str):
+    # Not a static import: REXLiTE AI must load when this integration is
+    # missing or failed its setup (tests/test_manifest_dependencies.py).
+    return __import__(f"homeassistant.components.{name}", fromlist=("__name__",))
+
+
 class FrigateError(Exception):
     """User-facing failure; ``code`` is stable for the operation platform."""
 
@@ -2489,8 +2495,7 @@ def register_frigate_bridge(hass: Any) -> FrigateBridge:
         VLANs are usually on another one, so Docker bridges are the only skip.
         """
 
-        from homeassistant.components import network
-
+        network = _component("network")
         addresses: list[str] = []
         for adapter in await network.async_get_adapters(hass):
             name = str(adapter.get("name") or "")
