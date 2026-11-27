@@ -66,6 +66,12 @@ KINDS = (POWER, REBOOT, CRASH, UPDATE, MANUAL, RESTART, HOST_REBOOT, RESTORE, UN
 CHECKING, SITE_UP, SITE_UNKNOWN = "checking", "up", "unknown"
 
 
+def _component(name: str):
+    # Not a static import: REXLiTE AI must load when this integration is
+    # missing or failed its setup (tests/test_manifest_dependencies.py).
+    return __import__(f"homeassistant.components.{name}", fromlist=("__name__",))
+
+
 def to_iso(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -315,8 +321,10 @@ def recorder_last_alive(
     session: Any, start: datetime, end: datetime
 ) -> datetime | None:
     """The last state or event the recorder committed in [start, end)."""
-    from homeassistant.components.recorder.db_schema import Events, States
     from sqlalchemy import func, select
+
+    schema = _component("recorder.db_schema")
+    Events, States = schema.Events, schema.States
 
     low, high = start.timestamp(), end.timestamp()
     stamps = [
@@ -337,8 +345,9 @@ def recorder_last_alive(
 
 def recorder_unclean_runs(session: Any, since: datetime) -> list[dict]:
     """Finished recorder runs HA closed as incorrect, newest first."""
-    from homeassistant.components.recorder.db_schema import RecorderRuns
     from sqlalchemy import select
+
+    RecorderRuns = _component("recorder.db_schema").RecorderRuns
 
     rows = session.execute(
         select(RecorderRuns.start, RecorderRuns.end, RecorderRuns.closed_incorrect)

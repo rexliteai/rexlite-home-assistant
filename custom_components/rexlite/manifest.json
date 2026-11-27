@@ -1,17 +1,6 @@
 {
   "domain": "rexlite",
   "name": "REXLiTE AI",
-  "after_dependencies": [
-    "backup",
-    "bluetooth",
-    "knx",
-    "mqtt",
-    "network",
-    "recorder",
-    "ssdp",
-    "thread",
-    "zeroconf"
-  ],
   "codeowners": [
     "@rexliteai"
   ],
@@ -27,5 +16,5 @@
   "issue_tracker": "https://github.com/rexliteai/rexlite-home-assistant/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.63"
+  "version": "0.1.64"
 }

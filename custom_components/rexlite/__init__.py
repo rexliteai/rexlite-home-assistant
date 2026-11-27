@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as home_assistant_version
@@ -41,46 +44,103 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 DATA_BACKUP_AGENT_LISTENERS = f"{DOMAIN}.backup_agent_listeners"
 
 
+async def _async_optional(name: str, start: Callable[[], Any]) -> Any:
+    """Start one feature; a failure is logged and never stops the cloud tunnel."""
+
+    try:
+        result = start()
+        return await result if inspect.isawaitable(result) else result
+    except Exception:  # noqa: BLE001 - the tunnel is how a broken hub gets repaired
+        _LOGGER.exception("Could not start %s; the cloud service still loads", name)
+        return None
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register local administrative deployment commands once per HA instance."""
-    from homeassistant.helpers.start import async_at_started
+    """Register local administrative commands once per HA instance.
 
-    from .device_discovery import register_device_discovery
-    from .frigate_bridge import async_register_plate_webhook, register_frigate_bridge
-    from .hacs_bind import register_hacs_bind
-    from .homekit_accessories import register_homekit_accessories
-    from .knx_project_deployment import register_websocket_commands
-    from .network_traffic_api import async_register_network_traffic
-    from .node_red_bridge import register_node_red_bridge
-    from .power_events import async_register_power_events
-    from .tapo_ir import register_tapo_ir
-    from .thread_border_routers import register_thread_border_routers
+    Each feature is imported and registered on its own: whatever fails here,
+    this returns True, or Home Assistant would leave the config entry (the
+    cloud tunnel) unloaded with nothing left to repair the hub through.
+    """
 
-    register_device_discovery(hass)
-    register_thread_border_routers(hass)
-    register_homekit_accessories(hass)
-    try:
+    def device_discovery() -> None:
+        from .device_discovery import register_device_discovery
+
+        register_device_discovery(hass)
+
+    def thread_border_routers() -> None:
+        from .thread_border_routers import register_thread_border_routers
+
+        register_thread_border_routers(hass)
+
+    def homekit_accessories() -> None:
+        from .homekit_accessories import register_homekit_accessories
+
+        register_homekit_accessories(hass)
+
+    def tapo_ir() -> None:
+        from .tapo_ir import register_tapo_ir
+
         register_tapo_ir(hass)
-    except Exception:  # noqa: BLE001 - IR remotes are optional; the tunnel must load
-        _LOGGER.exception("Could not register the Tapo IR remotes")
-    register_node_red_bridge(hass)
-    frigate = register_frigate_bridge(hass)
-    try:
-        await async_register_plate_webhook(hass, frigate)
-    except Exception:  # noqa: BLE001 - plates are optional; the rest must load
-        _LOGGER.exception("Could not register the license plate webhook")
-    register_hacs_bind(hass)
-    deployer = register_websocket_commands(hass)
-    await async_register_network_traffic(hass)
-    try:
+
+    def node_red_bridge() -> None:
+        from .node_red_bridge import register_node_red_bridge
+
+        register_node_red_bridge(hass)
+
+    async def cameras() -> None:
+        from .frigate_bridge import (
+            async_register_plate_webhook,
+            register_frigate_bridge,
+        )
+
+        frigate = register_frigate_bridge(hass)
+        # Plates are optional as well; the camera commands stay registered.
+        await _async_optional(
+            "the license plate webhook",
+            lambda: async_register_plate_webhook(hass, frigate),
+        )
+
+    def hacs_bind() -> None:
+        from .hacs_bind import register_hacs_bind
+
+        register_hacs_bind(hass)
+
+    def knx_deployment() -> None:
+        from homeassistant.helpers.start import async_at_started
+
+        from .knx_project_deployment import register_websocket_commands
+
+        deployer = register_websocket_commands(hass)
+
+        async def recover_interrupted_deployment(_hass: HomeAssistant) -> None:
+            await deployer.recover()
+
+        async_at_started(hass, recover_interrupted_deployment)
+
+    async def network_traffic() -> None:
+        from .network_traffic_api import async_register_network_traffic
+
+        await async_register_network_traffic(hass)
+
+    async def power_events() -> None:
+        from .power_events import async_register_power_events
+
         await async_register_power_events(hass)
-    except Exception:  # noqa: BLE001 - the outage record must not block the tunnel
-        _LOGGER.exception("Could not start the power outage record")
 
-    async def recover_interrupted_deployment(_hass: HomeAssistant) -> None:
-        await deployer.recover()
-
-    async_at_started(hass, recover_interrupted_deployment)
+    for name, start in (
+        ("device discovery", device_discovery),
+        ("the Thread border router list", thread_border_routers),
+        ("the HomeKit accessory list", homekit_accessories),
+        ("the Tapo IR remotes", tapo_ir),
+        ("the Node-RED bridge", node_red_bridge),
+        ("camera management", cameras),
+        ("the HACS binding", hacs_bind),
+        ("KNX deployment", knx_deployment),
+        ("network traffic", network_traffic),
+        ("the power outage record", power_events),
+    ):
+        await _async_optional(name, start)
     return True
 
 

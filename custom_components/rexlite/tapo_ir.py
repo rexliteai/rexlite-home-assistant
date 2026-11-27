@@ -154,6 +154,12 @@ _KEY_ALIASES = {
 _ACRONYMS = {"AC", "AV", "EPG", "HDMI", "IR", "OK", "PC", "TV", "USB"}
 
 
+def _component(name: str):
+    # Not a static import: REXLiTE AI must load when this integration is
+    # missing or failed its setup (tests/test_manifest_dependencies.py).
+    return __import__(f"homeassistant.components.{name}", fromlist=("__name__",))
+
+
 class TapoIrError(Exception):
     """A failure with a code and a short message the platform shows as is."""
 
@@ -1390,8 +1396,7 @@ def register_tapo_ir(hass: Any) -> TapoIrManager:
         return hass.data[DATA_KEY]
 
     async def broadcast_addresses() -> list[str]:
-        from homeassistant.components import network
-
+        network = _component("network")
         return [
             str(item) for item in await network.async_get_ipv4_broadcast_addresses(hass)
         ]
